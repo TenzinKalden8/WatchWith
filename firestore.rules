@@ -122,7 +122,12 @@ service cloud.firestore {
       allow delete: if isHost(roomCode) && resource.data.status == 'closed';
 
       match /participants/{userId} {
-        allow get, list: if isParticipant(roomCode);
+        // Joining checks whether the caller already has a membership record
+        // before it writes one. Let users get only their own record pre-join;
+        // listing the participant collection still requires membership.
+        allow get: if isParticipant(roomCode)
+          || (signedIn() && request.auth.uid == userId);
+        allow list: if isParticipant(roomCode);
 
         allow create: if signedIn()
           && request.auth.uid == userId
