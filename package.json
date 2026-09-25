@@ -8,14 +8,17 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-social-cinema \"node --test test/firestore.rules.test.js\"",
     "preview": "vite preview"
   },
   "dependencies": {
+    "firebase": "^12.19.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react-swc": "^4.0.0",

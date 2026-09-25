@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function participantPath(roomCode, userId) {
+      return /databases/$(database)/documents/rooms/$(roomCode)/participants/$(userId);
+    }
+
+    function roomPath(roomCode) {
+      return /databases/$(database)/documents/rooms/$(roomCode);
+    }
+
+    function isParticipant(roomCode) {
+      return signedIn() && exists(participantPath(roomCode, request.auth.uid));
+    }
+
+    function isHost(roomCode) {
+      return isParticipant(roomCode)
+        && get(participantPath(roomCode, request.auth.uid)).data.role == 'host';
+    }
+
+    function validRoomShape(data) {
+      return data.keys().hasOnly([
+        'name', 'hostId', 'hostName', 'maxParticipants', 'participantCount', 'participantIds',
+        'playbackPermission', 'content', 'status', 'privacy', 'createdAt', 'updatedAt'
+      ])
+      && data.name is string && data.name.size() > 0 && data.name.size() <= 60
+      && data.hostId is string
+      && data.hostName is string && data.hostName.size() > 0 && data.hostName.size() <= 80
+      && data.maxParticipants in [2, 4, 6, 8]
+      && data.participantCount is int
+      && data.participantIds is list
+      && data.playbackPermission in ['Host only', 'Host + moderators', 'Everyone']
+      && data.content is map
+      && data.content.keys().hasOnly(['provider', 'contentId', 'title', 'detail', 'sourceUrl', 'art'])
+      && data.content.provider == 'test'
+      && data.content.contentId in ['bbb', 'tears']
+      && (
+        (data.content.contentId == 'bbb'
+          && data.content.sourceUrl == 'https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4')
+        || (data.content.contentId == 'tears'
+          && data.content.sourceUrl == 'https://storage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4')
+      )
+      && data.updatedAt == request.time
+      && data.status in ['active', 'closed']
+      && data.privacy == 'private';
+    }
+
+    match /users/{userId} {
+      allow get, create, update: if signedIn() && request.auth.uid == userId;
+      allow list, delete: if false;
+    }
+
+    match /rooms/{roomCode} {
+      // A room code is an unlisted invite. Authenticated users need it to see
+      // the small room preview before joining; room listings remain private.
+      allow get: if signedIn() && (
+        isParticipant(roomCode)
+        || (resource.data.status == 'active' && resource.data.privacy == 'private')
+      );
+      allow list: if false;
+
+      allow create: if signedIn()
+        && validRoomShape(request.resource.data)
+        && request.resource.data.hostId == request.auth.uid
+        && request.resource.data.participantCount == 1
+        && request.resource.data.participantIds == [request.auth.uid]
+        && request.resource.data.status == 'active'
+        && request.resource.data.createdAt == request.time
+        && getAfter(participantPath(roomCode, request.auth.uid)).data.role == 'host';
+
+      // The counter is maintained atomically with participant membership.
+      // A join increments only while capacity remains; a leave decrements only
+      // when that same authenticated user's participant record is removed.
+      allow update: if signedIn() && (
+        (
+          resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'participantCount', 'participantIds', 'updatedAt'
+          ])
+          && request.resource.data.participantCount == resource.data.participantCount + 1
+          && request.resource.data.participantCount <= resource.data.maxParticipants
+          && request.resource.data.participantIds.size() == resource.data.participantIds.size() + 1
+          && request.resource.data.participantIds.hasAll(resource.data.participantIds)
+          && request.auth.uid in request.resource.data.participantIds
+          && !(request.auth.uid in resource.data.participantIds)
+          && request.resource.data.updatedAt == request.time
+          && getAfter(participantPath(roomCode, request.auth.uid)).data.role == 'viewer'
+        )
+        || (
+          isParticipant(roomCode)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'participantCount', 'participantIds', 'updatedAt', 'hostId', 'status'
+          ])
+          && request.resource.data.participantCount == resource.data.participantCount - 1
+          && resource.data.participantIds.size() == request.resource.data.participantIds.size() + 1
+          && resource.data.participantIds.hasAll(request.resource.data.participantIds)
+          && !(request.auth.uid in request.resource.data.participantIds)
+          && request.resource.data.updatedAt == request.time
+          && !existsAfter(participantPath(roomCode, request.auth.uid))
+          && (
+            (isHost(roomCode)
+              && request.resource.data.hostId == null
+              && request.resource.data.status == 'closed')
+            || (!isHost(roomCode)
+              && request.resource.data.hostId == resource.data.hostId
+              && request.resource.data.status == resource.data.status)
+            || (isHost(roomCode)
+              && request.resource.data.hostId is string
+              && request.resource.data.status == resource.data.status
+              && getAfter(participantPath(roomCode, request.resource.data.hostId)).data.role == 'host')
+          )
+        )
+      );
+
+      allow delete: if isHost(roomCode) && resource.data.status == 'closed';
+
+      match /participants/{userId} {
+        allow get, list: if isParticipant(roomCode);
+
+        allow create: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly([
+            'uid', 'displayName', 'avatarUrl', 'role', 'online', 'lastSeen', 'joinedAt'
+          ])
+          && request.resource.data.uid == userId
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 80
+          && request.resource.data.online == true
+          && request.resource.data.joinedAt == request.time
+          && request.resource.data.lastSeen == request.time
+          && (
+            (request.resource.data.role == 'host'
+              && getAfter(roomPath(roomCode)).data.hostId == userId
+              && getAfter(roomPath(roomCode)).data.participantCount == 1)
+            || (request.resource.data.role == 'viewer'
+              && get(roomPath(roomCode)).data.status == 'active'
+              && get(roomPath(roomCode)).data.participantCount < get(roomPath(roomCode)).data.maxParticipants
+              && getAfter(roomPath(roomCode)).data.participantCount == get(roomPath(roomCode)).data.participantCount + 1
+              && userId in getAfter(roomPath(roomCode)).data.participantIds)
+          );
+
+        allow update: if signedIn() && (
+          (request.auth.uid == userId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online', 'lastSeen'])
+            && request.resource.data.online is bool
+            && request.resource.data.lastSeen == request.time)
+          || (isHost(roomCode)
+            && resource.data.role == 'viewer'
+            && request.resource.data.role == 'host'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
+            && getAfter(roomPath(roomCode)).data.hostId == userId)
+        );
+
+        allow delete: if signedIn() && request.auth.uid == userId
+          && isParticipant(roomCode)
+          && getAfter(roomPath(roomCode)).data.participantCount == get(roomPath(roomCode)).data.participantCount - 1
+          && !(userId in getAfter(roomPath(roomCode)).data.participantIds);
+      }
+    }
+  }
+}

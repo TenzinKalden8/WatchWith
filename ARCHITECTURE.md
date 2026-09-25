@@ -1,52 +1,83 @@
 # Social Cinema architecture
 
-## Phase 1 prototype
+## Implemented: UI, authentication, and rooms
 
 ```mermaid
 flowchart LR
-  UI[React client: home, setup, invite, pre-join, cinema]
-  State[In-memory prototype state]
-  Adapter[Test video provider metadata]
-  Sample[Public Blender sample video]
-  UI --> State
-  UI --> Adapter
-  UI -->|direct browser playback| Sample
+  U[Browser: React / Vite]
+  A[Firebase Authentication]
+  F[Cloud Firestore]
+  R[Firestore security rules]
+  P[Video provider adapter]
+  V[Public test video source]
+  U -->|email and password| A
+  U -->|room transactions, listeners, presence heartbeat| F
+  F --> R
+  U --> P
+  P -->|direct playback| V
 ```
 
-The UI currently runs as a single React/Vite application. The player is the center of the cinema view, while compact participant tiles sit in peripheral space. CSS viewing modes change how much space those tiles occupy. Content metadata is independent of UI presentation; the sample file is fetched directly by each browser. The remaining social and room data in this phase is demonstrative only.
+Firebase Auth identifies a user. The browser uses Firestore transactions for room creation and membership changes; rules validate every write, including host identity, participant ownership, participant counts, room capacity, and host transfer. A six-character room code is an unlisted invite capability. A signed-in user with the code can read the room preview, but only a room member can list participants or read member documents. Room listings are disabled.
 
-## Target real-time architecture
+Presence is a Firestore `online` flag refreshed every 25 seconds while the player is open. A page-hide signal attempts to mark the user offline. Browsers cannot guarantee this cleanup on a crash or network loss, so true disconnect presence and stale-member cleanup remain future work. Camera and microphone are not connected in this phase. Chat, reactions, and playback events are not persisted or shared.
+
+Configuration is provided by the four `VITE_FIREBASE_*` variables. Firebase web configuration is visible to clients by design; Firestore security rules are the access boundary. No admin SDK or service account key is placed in the browser. Use a dedicated Firebase project for this app.
+
+## Rule-validated room transaction flows
+
+### Create
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Firestore
+  participant Rules
+  Client->>Firestore: Transaction: create room + host participant
+  Firestore->>Rules: Check owner, schema, test content, initial count, host record
+  Rules-->>Firestore: Allow only as one valid atomic write
+  Firestore-->>Client: Return room code
+```
+
+### Join / leave
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Firestore
+  participant Rules
+  Client->>Firestore: Read room using invite code
+  Firestore-->>Client: Private room preview
+  Client->>Firestore: Transaction: add own participant + increment count
+  Firestore->>Rules: Check active, capacity, participant UID, count delta
+  Rules-->>Firestore: Allow / deny atomically
+  Firestore-->>Client: Updated room and participant snapshots
+```
+
+On host leave, one Firestore transaction promotes the earliest joined remaining participant, removes the old host membership, and decrements the count. If no one remains, it closes the room. The Firestore emulator rule tests cover these changes.
+
+## Next: real-time media and synchronized playback
 
 ```mermaid
 flowchart LR
-  A[Client A: React app] -->|HTTPS auth, room API| B[Backend API / functions]
-  C[Client B: React app] -->|HTTPS auth, room API| B
-  A <-->|presence, playback clock, chat, reactions| R[Realtime room service]
-  C <-->|presence, playback clock, chat, reactions| R
-  A <-->|WebRTC audio/video| S[WebRTC SFU]
-  C <-->|WebRTC audio/video| S
-  A -->|authorized playback request| P[Video provider SDK / source]
-  C -->|authorized playback request| P
-  B --> D[(Room and membership database)]
-  R --> D
+  A[Client A] -->|Firebase Auth and room membership| F[Firestore + security rules]
+  B[Client B] -->|Firebase Auth and room membership| F
+  A <-->|WebRTC audio/video| S[Managed SFU]
+  B <-->|WebRTC audio/video| S
+  A <-->|playback, chat, reactions, presence| R[Realtime room channel]
+  B <-->|playback, chat, reactions, presence| R
+  A -->|authorized playback| P[Video provider]
+  B -->|authorized playback| P
 ```
 
-The backend authenticates users and validates room membership, room capacity, host/moderator roles, playback permissions, lock state, participant removal, and content selection. Clients must not be trusted to enforce these rules. The realtime service carries compact room events and presence; an SFU routes participant audio/video. The movie itself remains between the provider and each participant device.
+The next phase should add an SFU for participant camera and microphone tracks. Playback synchronization should keep a compact authoritative state `{state, position, updatedAt, controllerId}` and compare client positions periodically. Ignore drift below 100 ms, gradually correct moderate drift when supported, and seek only for larger drift. The movie itself remains between each device and its authorized provider; it is never relayed through our servers.
 
-## Playback synchronization target
+## Provider boundary
 
-Store `{ state, position, updatedAt, controllerId }` as authoritative room state. A room event updates state immediately on play, pause, and seek. Clients estimate current room position from the last authoritative position and timestamp, then compare their local provider position periodically. Ignore drift below 100 ms, gradually adjust playback rate for moderate drift (100–500 ms, when the provider permits), and seek for larger drift. Provider capabilities vary, so the adapter reports supported operations; provider-specific rules remain in the adapter.
+The player consumes normalized metadata (`provider`, `contentId`, `title`, `thumbnail`, `duration`) and a playback adapter with initialize/state/play/pause/seek/dispose operations. `TestVideoProvider` is the first catalog. Future adapters must use officially authorized APIs or SDKs and follow the provider's rules. No unsupported OTT embedding, scraping, DRM circumvention, extraction, or redistribution belongs in this system.
 
-## Provider adapter target
+## Operational notes
 
-The player consumes normalized content metadata (`provider`, `contentId`, `title`, `thumbnail`, `duration`) plus a playback adapter with initialize/state/play/pause/seek/dispose operations. `TestVideoProvider` is the first implementation. Future implementations must use officially authorized SDKs/APIs and enforce each provider's playback requirements. No unsupported OTT embedding, scraping, DRM circumvention, stream extraction, or redistribution belongs in this system.
-
-## Resilience and lifecycle
-
-Presence should use leases/heartbeats and remove stale connections after a timeout. On reconnect, the client rejoins, restores permitted media tracks and fetches authoritative room state before resuming. When a host leaves, a trusted backend transaction selects an eligible next participant and changes ownership; when the last participant leaves, the room closes. Every media and realtime subscription has a leave/dispose path.
-
-## Decisions still open for Phase 2+
-
-- Select room database/realtime transport after defining consistency, latency, and deployment constraints.
-- Select managed SFU based on expected geography, participant count, recording policy, and cost.
-- Add environment variables only when the chosen services require them; public client configuration is not a secret, private service credentials stay server-side.
+- Auth, room creation/joining, and participant presence require a dedicated Firebase project and the public web-app config variables.
+- Deploy `firestore.rules` before allowing real users to join rooms.
+- The test suite uses a demo project ID and the local Firestore emulator; it does not contact production Firebase.
+- Adding server-side functions or a managed SFU may introduce billing and deployment requirements. Evaluate those separately before enabling paid services.

@@ -1,6 +1,6 @@
 # Social Cinema
 
-A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. The current build is **Phase 1 UI only**. Room data, participants, chat, and media are mocked locally; it is not a multiplayer service yet.
+A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. **Phase 2 auth and rooms** now use Firebase Authentication and Firestore when configured. Camera/microphone, chat, reactions, and synchronized playback remain later phases.
 
 ## Run locally
 
@@ -9,22 +9,23 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL in a browser. Use Create a cinema to configure a room, create an invite, and enter the player. Join a cinema accepts a six-character room code and opens a pre-join preview. `/cinema/AB7K92` also opens the prototype with that code prefilled (Vite's SPA fallback serves the app).
+Open the Vite URL in a browser. Use Create a cinema to configure a room, create an invite, and enter the player. Join a cinema accepts a six-character room code and opens a pre-join screen. A shared link uses `?room=AB7K92` and opens the join flow with that code prefilled.
 
-The public preview deploys from `main` using GitHub Pages. In the repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. Share `https://tenzinkalden8.github.io/WatchWith/` after the deployment workflow succeeds. Invite links append `?room=AB7K92` and open the join-code screen.
+The public preview deploys from `main` using GitHub Pages. In the repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. Add the four `VITE_FIREBASE_*` values from the registered Firebase web app under **Settings → Secrets and variables → Actions → Variables**. Share `https://tenzinkalden8.github.io/WatchWith/` after the deployment workflow succeeds. Invite links append `?room=AB7K92` and open the join-code screen.
 
 ## Current architecture
 
 - `src/App.jsx` contains the prototype views and lightweight local UI state; `src/providers/videoProviders.js` supplies the provider-neutral sample catalog.
+- `src/firebase/` initializes Firebase only when client config is present. `src/services/auth.js` owns email/password auth; `src/services/rooms.js` owns transactional room creation, joining, participant heartbeats, and host handoff. Firestore rules validate room capacity and membership writes.
 - `src/App.css` contains the responsive, portrait-to-landscape layouts and cinema player styling.
 - Test movie entries use a provider-neutral content shape (`id`, `title`, `provider`, `src`, `art`). A small provider registry names the MVP adapter. The video files are public Blender Foundation sample videos served by Google's public sample bucket; their availability depends on that third party.
 - The player loads the video directly in each browser. No movie video is relayed through an application server.
-- Camera tiles, room members, playback authority, reactions and chat are visual simulations. No camera/microphone devices or WebRTC connection are opened in this phase.
+- Auth accounts, room records, capacity, participant lists, online heartbeats and host handoff are real when Firebase is configured. Chat, reactions, camera, microphone, and synchronized playback are still prototypes; no camera/microphone devices or WebRTC connection are opened yet.
 
 ## Phase roadmap
 
-1. **UI prototype (current):** login/home, create/join/pre-join, cinema, mock participants, controls, chat/reactions/settings.
-2. **Auth and rooms:** add an authentication adapter and persistent room membership/presence with backend-enforced capacity and permissions.
+1. **UI prototype:** login/home, create/join/pre-join, cinema, controls, chat/reactions/settings.
+2. **Auth and rooms (implemented, requires Firebase project config):** email/password auth, persistent rooms, capacity enforcement, participant presence heartbeats, and host transfer.
 3. **Real-time media:** use a WebRTC SFU for audio/video and signaling; release tracks and subscriptions on leave.
 4. **Synchronized playback:** store an authoritative playback clock, broadcast play/pause/seek, and correct drift gradually.
 5. **Social controls:** persistent chat/reactions, host/moderator roles, participant management and host transfer.
@@ -37,11 +38,18 @@ Keep the room/player UI dependent on normalized content metadata and a playback 
 
 ## Configuration and testing
 
-There are no application secrets or backend environment variables in Phase 1. The existing Vite scripts are `npm run dev`, `npm run build`, `npm run lint`, and `npm run preview`. A real authentication, database and SFU configuration will be documented here and in `ARCHITECTURE.md` when those phases are implemented.
+The Vite scripts are `npm run dev`, `npm run build`, `npm run lint`, `npm run test:rules`, and `npm run preview`. The Firebase web configuration is public client configuration; database security comes from `firestore.rules`. Do not put service account credentials or private tokens in Vite variables.
 
 ## Known limitations
 
-- Room creation, room codes and invitation sharing are client-only demonstrations. The join form does not look up or validate a server room.
+- Online status is a Firestore heartbeat; browser shutdown may leave an online flag stale until the participant updates again. Reliable disconnect presence and reconnect policy are future work.
 - Camera and microphone toggles change UI state only; the preview is illustrative rather than a live camera.
+- Chat, reactions and playback controls are not shared between clients yet.
 - Playback is local to one browser, has no shared authoritative state, and may require network access to Google's sample bucket.
 - Google Fonts are fetched externally; system fonts are used if unavailable.
+
+## Firebase setup (Phase 2)
+
+Create a **new Firebase project for Social Cinema** (do not reuse a project belonging to another app), register a Web app, enable **Authentication → Email/Password**, and create a Firestore database in Native mode. Publish `firestore.rules` with `firebase deploy --only firestore:rules --project YOUR_PROJECT_ID`. Copy `.env.example` to `.env.local` and fill its values from Firebase Project settings → Your apps → SDK setup. Add `localhost` and `tenzinkalden8.github.io` to Authentication's authorized domains. For GitHub Pages, add the four config values as Actions variables named `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`. Then rerun the Pages workflow so the site rebuilds with that configuration. These are public web-app configuration values; database security comes from the rules. Never add service account keys to the browser or repository.
+
+The Firebase CLI emulator configuration is in `firebase.json`. For local UI development, use demo values for all four required Firebase config fields and set `VITE_USE_FIREBASE_EMULATORS=true` in `.env.local`, then run `firebase emulators:start --only auth,firestore --project demo-social-cinema`. The Firestore rule suite is `npm run test:rules` and needs Java 21+ for the current Firebase emulator. It covers room creation, invite previews, membership privacy, capacity, participant presence writes, unauthorized controls, and host handoff.
