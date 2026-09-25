@@ -341,10 +341,19 @@ function App() {
           const cameraEnabled = isLocal ? cam : participant.cameraEnabled
           const microphoneEnabled = isLocal ? mic : participant.microphoneEnabled
           const hasVideo = cameraEnabled && stream?.getVideoTracks().some((track) => track.readyState === 'live' && track.enabled)
+          const peerState = peerStates[participant.uid]
+          const mediaStatus = !cameraEnabled ? 'CAMERA OFF'
+            : hasVideo ? 'LIVE'
+              : peerState === 'failed' ? 'NETWORK BLOCKED'
+                : peerState === 'disconnected' ? 'RECONNECTING'
+                  : peerState === 'checking' || peerState === 'connecting' ? 'CONNECTING…'
+                    : peerState === 'connected' || peerState === 'completed' ? 'CONNECTED · WAITING VIDEO'
+                      : peerState === 'closed' ? 'OFFLINE'
+                        : 'WAITING FOR VIDEO'
           return <div className={`camera-tile participant-tile participant-tile-${index}`} key={participant.uid}>
             {hasVideo ? <MediaVideo stream={stream} muted={isLocal}/> : <div className={`avatar ${['art-coral', 'art-blue', 'art-gold', 'art-violet'][index]}`}>{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div>}
             <div className="tile-name"><span className={peerStates[participant.uid] === 'connected' ? 'voice-dot' : ''}/>{isLocal ? 'You' : participant.displayName}{participant.role === 'host' ? ' · HOST' : ''}</div>
-            <span className="tile-status">{!cameraEnabled ? 'CAMERA OFF' : hasVideo ? (peerStates[participant.uid] === 'connected' || isLocal ? 'LIVE' : 'CONNECTING') : 'WAITING FOR VIDEO'}</span>
+            <span className="tile-status">{isLocal && hasVideo ? 'LIVE' : mediaStatus}</span>
             {!microphoneEnabled && <span className="tile-mute">MIC OFF</span>}
           </div>
         })}</div>}

@@ -10,6 +10,16 @@ import { db } from '../firebase/firestoreClient'
 
 const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }]
 
+function signalingError(error) {
+  if (error?.code === 'permission-denied') {
+    return 'Camera signaling was blocked by Firebase permissions. Refresh the app; if it continues, the deployed Firestore rules need updating.'
+  }
+  if (error?.code === 'unavailable' || error?.code === 'network-request-failed') {
+    return 'Camera signaling lost its Firebase connection. Check the internet connection and wait for it to reconnect.'
+  }
+  return error?.message || 'Could not exchange camera connection details.'
+}
+
 function pairFor(firstId, secondId) {
   const [offererId, answererId] = [firstId, secondId].sort()
   return { offererId, answererId, signalId: `${offererId}__${answererId}` }
@@ -113,7 +123,15 @@ export class RoomMediaSession {
     }
     pc.onconnectionstatechange = () => {
       this.onConnectionChange(uid, pc.connectionState)
-      if (pc.connectionState === 'failed') this.onError(`Could not connect to ${uid}. Their network may need a TURN relay.`)
+      if (pc.connectionState === 'failed') this.onError(`Could not connect to another camera. The network may require a TURN relay, which is not configured in this MVP.`)
+    }
+    pc.oniceconnectionstatechange = () => {
+      // ICE is the useful diagnostic when a peer connection exists but media
+      // cannot find a route through both participants' routers/firewalls.
+      this.onConnectionChange(uid, pc.iceConnectionState)
+      if (pc.iceConnectionState === 'failed') {
+        this.onError('A direct camera connection could not cross one of the networks. This MVP has STUN only; some networks require a TURN relay.')
+      }
     }
     return entry
   }
@@ -139,8 +157,8 @@ export class RoomMediaSession {
         const data = snapshot.data()
         if (data.sessionId !== sessionId) return
         entry.processing = entry.processing.then(() => this.consumeOffererSnapshot(entry, data))
-          .catch((error) => this.onError(error.message))
-      }, (error) => this.onError(error.message))
+        .catch((error) => this.onError(signalingError(error)))
+      }, (error) => this.onError(signalingError(error)))
       await entry.ready
       const offer = await entry.pc.createOffer()
       await entry.pc.setLocalDescription(offer)
@@ -148,7 +166,7 @@ export class RoomMediaSession {
         offer: { type: offer.type, sdp: offer.sdp },
         updatedAt: serverTimestamp(),
       })
-    })().catch((error) => this.onError(error.message))
+    })().catch((error) => this.onError(signalingError(error)))
   }
 
   watchOffer(uid, pair) {
@@ -163,9 +181,9 @@ export class RoomMediaSession {
       if (currentEntry.sessionId !== data.sessionId) {
         currentEntry.processing = currentEntry.processing.then(() => this.acceptOffer(uid, currentEntry, data)).catch((error) => this.onError(error.message))
       } else {
-        currentEntry.processing = currentEntry.processing.then(() => this.consumeAnswererSnapshot(currentEntry, data)).catch((error) => this.onError(error.message))
+        currentEntry.processing = currentEntry.processing.then(() => this.consumeAnswererSnapshot(currentEntry, data)).catch((error) => this.onError(signalingError(error)))
       }
-    }, (error) => this.onError(error.message))
+    }, (error) => this.onError(signalingError(error)))
   }
 
   async acceptOffer(uid, oldEntry, data) {
