@@ -70,6 +70,8 @@ export async function createRoom({ user, name, film, maxParticipants, playbackPe
           avatarUrl: user.photoURL || null,
           role: 'host',
           online: true,
+          cameraEnabled: false,
+          microphoneEnabled: false,
           lastSeen: now,
           joinedAt: now,
         })
@@ -114,7 +116,7 @@ export async function previewRoom(roomCode) {
   }
 }
 
-export async function joinRoom({ room, user }) {
+export async function joinRoom({ room, user, cameraEnabled = false, microphoneEnabled = false }) {
   requireDb()
   const roomRef = doc(db, 'rooms', room.code)
   const memberRef = doc(db, 'rooms', room.code, 'participants', user.uid)
@@ -128,7 +130,12 @@ export async function joinRoom({ room, user }) {
       const data = roomSnapshot.data()
       if (data.status !== 'active') throw new Error('The host has ended this cinema.')
       if (memberSnapshot.exists()) {
-        transaction.update(memberRef, { online: true, lastSeen: serverTimestamp() })
+        transaction.update(memberRef, {
+          online: true,
+          cameraEnabled,
+          microphoneEnabled,
+          lastSeen: serverTimestamp(),
+        })
         return { code: room.code, ...data }
       }
       if (data.locked) throw new Error('The host has locked this cinema.')
@@ -145,6 +152,8 @@ export async function joinRoom({ room, user }) {
         avatarUrl: user.photoURL || null,
         role: 'viewer',
         online: true,
+        cameraEnabled,
+        microphoneEnabled,
         lastSeen: now,
         joinedAt: now,
       })
@@ -175,6 +184,15 @@ export async function setOnline(roomCode, uid, online) {
   requireDb()
   await updateDoc(doc(db, 'rooms', roomCode, 'participants', uid), {
     online,
+    lastSeen: serverTimestamp(),
+  })
+}
+
+export async function setParticipantMedia(roomCode, uid, cameraEnabled, microphoneEnabled) {
+  requireDb()
+  await updateDoc(doc(db, 'rooms', roomCode, 'participants', uid), {
+    cameraEnabled,
+    microphoneEnabled,
     lastSeen: serverTimestamp(),
   })
 }

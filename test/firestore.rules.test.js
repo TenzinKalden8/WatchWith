@@ -49,7 +49,17 @@ function roomRecord(hostId, maxParticipants = 6, participantIds = [hostId]) {
 
 function memberRecord(uid, role) {
   const now = new Date()
-  return { uid, displayName: uid, avatarUrl: null, role, online: true, lastSeen: now, joinedAt: now }
+  return {
+    uid,
+    displayName: uid,
+    avatarUrl: null,
+    role,
+    online: true,
+    cameraEnabled: false,
+    microphoneEnabled: false,
+    lastSeen: now,
+    joinedAt: now,
+  }
 }
 
 async function seedRoom(code, hostId, maxParticipants = 6, participantIds = [hostId]) {
@@ -81,6 +91,8 @@ test('authenticated host can atomically create a room and host membership', asyn
   const roomRef = doc(db, 'rooms', 'ABC234')
   const memberRef = doc(db, 'rooms', 'ABC234', 'participants', 'host-a')
   await assertSucceeds(runTransaction(db, async (transaction) => {
+    const existing = await transaction.get(roomRef)
+    assert.equal(existing.exists(), false)
     transaction.set(roomRef, { ...roomRecord('host-a'), createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
     transaction.set(memberRef, { ...memberRecord('host-a', 'host'), joinedAt: serverTimestamp(), lastSeen: serverTimestamp() })
   }))
@@ -109,6 +121,31 @@ test('joining atomically increments capacity and adds only the caller', async ()
     transaction.set(memberRef, { ...memberRecord('guest-b', 'viewer'), joinedAt: serverTimestamp(), lastSeen: serverTimestamp() })
   }))
   await assertSucceeds(getDoc(doc(guestDb, 'rooms', 'ABC234', 'participants', 'guest-b')))
+})
+
+test('room members can exchange signaling with their direct peer only', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const hostDb = testEnv.authenticatedContext('host-a').firestore()
+  const guestDb = testEnv.authenticatedContext('guest-b').firestore()
+  const outsiderDb = testEnv.authenticatedContext('outsider').firestore()
+  const signalRef = doc(guestDb, 'rooms', 'ABC234', 'signals', 'guest-b__host-a')
+
+  await assertSucceeds(getDoc(signalRef))
+  await assertSucceeds(setDoc(signalRef, {
+    offererId: 'guest-b',
+    answererId: 'host-a',
+    sessionId: 'session-1',
+    offer: null,
+    answer: null,
+    offerCandidates: [],
+    answerCandidates: [],
+    updatedAt: serverTimestamp(),
+  }))
+  await assertFails(getDoc(doc(outsiderDb, 'rooms', 'ABC234', 'signals', 'guest-b__host-a')))
+  await assertSucceeds(updateDoc(doc(hostDb, 'rooms', 'ABC234', 'signals', 'guest-b__host-a'), {
+    answer: { type: 'answer', sdp: 'test-sdp' },
+    updatedAt: serverTimestamp(),
+  }))
 })
 
 test('room capacity cannot be exceeded, and a viewer cannot change host permissions', async () => {

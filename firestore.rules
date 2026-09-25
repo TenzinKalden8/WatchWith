@@ -13,6 +13,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/rooms/$(roomCode);
     }
 
+    function signalPath(roomCode, signalId) {
+      return /databases/$(database)/documents/rooms/$(roomCode)/signals/$(signalId);
+    }
+
     function isParticipant(roomCode) {
       return signedIn() && exists(participantPath(roomCode, request.auth.uid));
     }
@@ -132,13 +136,16 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.auth.uid == userId
           && request.resource.data.keys().hasOnly([
-            'uid', 'displayName', 'avatarUrl', 'role', 'online', 'lastSeen', 'joinedAt'
+            'uid', 'displayName', 'avatarUrl', 'role', 'online', 'cameraEnabled',
+            'microphoneEnabled', 'lastSeen', 'joinedAt'
           ])
           && request.resource.data.uid == userId
           && request.resource.data.displayName is string
           && request.resource.data.displayName.size() > 0
           && request.resource.data.displayName.size() <= 80
           && request.resource.data.online == true
+          && request.resource.data.cameraEnabled is bool
+          && request.resource.data.microphoneEnabled is bool
           && request.resource.data.joinedAt == request.time
           && request.resource.data.lastSeen == request.time
           && (
@@ -154,8 +161,12 @@ service cloud.firestore {
 
         allow update: if signedIn() && (
           (request.auth.uid == userId
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['online', 'lastSeen'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'online', 'lastSeen', 'cameraEnabled', 'microphoneEnabled'
+            ])
             && request.resource.data.online is bool
+            && (!('cameraEnabled' in request.resource.data.keys()) || request.resource.data.cameraEnabled is bool)
+            && (!('microphoneEnabled' in request.resource.data.keys()) || request.resource.data.microphoneEnabled is bool)
             && request.resource.data.lastSeen == request.time)
           || (isHost(roomCode)
             && resource.data.role == 'viewer'
@@ -168,6 +179,65 @@ service cloud.firestore {
           && isParticipant(roomCode)
           && getAfter(roomPath(roomCode)).data.participantCount == get(roomPath(roomCode)).data.participantCount - 1
           && !(userId in getAfter(roomPath(roomCode)).data.participantIds);
+      }
+
+      match /signals/{signalId} {
+        function validSignal(data) {
+          return data.keys().hasOnly([
+            'offererId', 'answererId', 'sessionId', 'offer', 'answer',
+            'offerCandidates', 'answerCandidates', 'updatedAt'
+          ])
+          && data.offererId is string
+          && data.answererId is string
+          && data.offererId < data.answererId
+          && signalId == data.offererId + '__' + data.answererId
+          && exists(participantPath(roomCode, data.offererId))
+          && exists(participantPath(roomCode, data.answererId))
+          && data.sessionId is string
+          && (data.offer == null || (data.offer is map && data.offer.type == 'offer' && data.offer.sdp is string))
+          && (data.answer == null || (data.answer is map && data.answer.type == 'answer' && data.answer.sdp is string))
+          && data.offerCandidates is list
+          && data.answerCandidates is list
+          && data.updatedAt == request.time;
+        }
+
+        // Members watch only their own pair; a missing document is permitted
+        // so the answerer can subscribe before the offer has been written.
+        allow get: if isParticipant(roomCode) && (
+          !exists(signalPath(roomCode, signalId))
+          || request.auth.uid in [resource.data.offererId, resource.data.answererId]
+        );
+        allow list: if false;
+
+        allow create: if signedIn()
+          && isParticipant(roomCode)
+          && validSignal(request.resource.data)
+          && request.resource.data.offererId == request.auth.uid
+          && request.resource.data.offer == null
+          && request.resource.data.answer == null
+          && request.resource.data.offerCandidates.size() == 0
+          && request.resource.data.answerCandidates.size() == 0;
+
+        allow update: if signedIn()
+          && isParticipant(roomCode)
+          && validSignal(request.resource.data)
+          && request.resource.data.offererId == resource.data.offererId
+          && request.resource.data.answererId == resource.data.answererId
+          && (
+            (request.auth.uid == resource.data.offererId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'sessionId', 'offer', 'answer', 'offerCandidates', 'answerCandidates', 'updatedAt'
+              ]))
+            || (request.auth.uid == resource.data.answererId
+              && request.resource.data.sessionId == resource.data.sessionId
+              && request.resource.data.offer == resource.data.offer
+              && request.resource.data.offerCandidates == resource.data.offerCandidates
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'answer', 'answerCandidates', 'updatedAt'
+              ]))
+          );
+
+        allow delete: if false;
       }
     }
   }

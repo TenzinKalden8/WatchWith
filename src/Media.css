@@ -1,0 +1,34 @@
+.participant-video {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #171613;
+}
+
+.camera-tile audio { display: none; }
+
+.tile-mute {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  color: #f0c4b5;
+  font-size: 6px;
+  letter-spacing: .6px;
+}
+
+.participant-tile .tile-status {
+  left: auto;
+  right: 8px;
+  opacity: .8;
+}
+
+.participant-tile .tile-name {
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

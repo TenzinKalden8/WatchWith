@@ -1,6 +1,6 @@
 # Social Cinema
 
-A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. **Phase 2 auth and rooms** now use Firebase Authentication and Firestore when configured. Camera/microphone, chat, reactions, and synchronized playback remain later phases.
+A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. Authentication and rooms use Firebase; camera and microphone use browser WebRTC for small rooms. Shared chat, reactions, and synchronized playback remain later phases.
 
 ## Run locally
 
@@ -20,13 +20,14 @@ The public preview deploys from `main` using GitHub Pages. In the repository, se
 - `src/App.css` contains the responsive, portrait-to-landscape layouts and cinema player styling.
 - Test movie entries use a provider-neutral content shape (`id`, `title`, `provider`, `src`, `art`). A small provider registry names the MVP adapter. The video files are public Blender Foundation sample videos served by Google's public sample bucket; their availability depends on that third party.
 - The player loads the video directly in each browser. No movie video is relayed through an application server.
-- Auth accounts, room records, capacity, participant lists, online heartbeats and host handoff are real when Firebase is configured. Chat, reactions, camera, microphone, and synchronized playback are still prototypes; no camera/microphone devices or WebRTC connection are opened yet.
+- Auth accounts, room records, capacity, participant lists, online heartbeats, host handoff, and camera/microphone media are real when Firebase is configured. Chat, reactions, and synchronized playback are still local prototypes.
+- Camera and microphone use browser `getUserMedia` and a small-room WebRTC peer mesh. Firestore stores only pairwise offer/answer and ICE signaling; audio/video tracks travel directly between participants. Camera permission is requested on the pre-join screen.
 
 ## Phase roadmap
 
 1. **UI prototype:** login/home, create/join/pre-join, cinema, controls, chat/reactions/settings.
 2. **Auth and rooms (implemented, requires Firebase project config):** email/password auth, persistent rooms, capacity enforcement, participant presence heartbeats, and host transfer.
-3. **Real-time media:** use a WebRTC SFU for audio/video and signaling; release tracks and subscriptions on leave.
+3. **Real-time media (implemented):** browser camera/microphone capture, pairwise WebRTC audio/video, Firestore signaling, participant media status, and track cleanup.
 4. **Synchronized playback:** store an authoritative playback clock, broadcast play/pause/seek, and correct drift gradually.
 5. **Social controls:** persistent chat/reactions, host/moderator roles, participant management and host transfer.
 6. **Polish:** reconnection, accessibility, real adaptive quality, device QA and performance work.
@@ -43,12 +44,13 @@ The Vite scripts are `npm run dev`, `npm run build`, `npm run lint`, `npm run te
 ## Known limitations
 
 - Online status is a Firestore heartbeat; browser shutdown may leave an online flag stale until the participant updates again. Reliable disconnect presence and reconnect policy are future work.
-- Camera and microphone toggles change UI state only; the preview is illustrative rather than a live camera.
+- Media uses direct peer connections with public STUN and no TURN relay. Some NATs, firewalls, and mobile networks can block direct media; a credentialed TURN service or managed SFU is needed for more reliable connections and larger rooms.
+- The mesh targets small rooms (2–6 people). Each participant sends media directly to every peer, so device and upload load grows with room size.
 - Chat, reactions and playback controls are not shared between clients yet.
 - Playback is local to one browser, has no shared authoritative state, and may require network access to Google's sample bucket.
 - Google Fonts are fetched externally; system fonts are used if unavailable.
 
-## Firebase setup (Phase 2)
+## Firebase setup (Phase 2 and 3)
 
 The dedicated Firebase project is `watchwith-social-cinema` (console: https://console.firebase.google.com/project/watchwith-social-cinema). Its Web app is registered, the default Firestore database is in `asia-south1`, Firestore security rules are deployed, and Email/Password Authentication is enabled. The `localhost` and `tenzinkalden8.github.io` domains are authorized. `.firebaserc` selects this project for Firebase CLI commands.
 
