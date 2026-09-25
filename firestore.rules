@@ -56,8 +56,11 @@ service cloud.firestore {
 
     match /rooms/{roomCode} {
       // A room code is an unlisted invite. Authenticated users need it to see
-      // the small room preview before joining; room listings remain private.
+      // the small room preview before joining, and the host's transaction
+      // checks that its randomly generated code is unused. Room listings remain private.
       allow get: if signedIn() && (
+        !exists(roomPath(roomCode))
+        ||
         isParticipant(roomCode)
         || (resource.data.status == 'active' && resource.data.privacy == 'private')
       );
