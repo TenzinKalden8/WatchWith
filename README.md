@@ -11,7 +11,7 @@ npm run dev
 
 Open the Vite URL in a browser. Use Create a cinema to configure a room, create an invite, and enter the player. Join a cinema accepts a six-character room code and opens a pre-join preview. `/cinema/AB7K92` also opens the prototype with that code prefilled (Vite's SPA fallback serves the app).
 
-The public preview deploys from `main` using GitHub Pages. Once Pages is enabled and the Actions workflow completes, share `https://tenzinkalden8.github.io/WatchWith/`. Invite links append `?room=AB7K92` and open the join-code screen.
+The public preview deploys from `main` using GitHub Pages. In the repository, set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. Share `https://tenzinkalden8.github.io/WatchWith/` after the deployment workflow succeeds. Invite links append `?room=AB7K92` and open the join-code screen.
 
 ## Current architecture
 
