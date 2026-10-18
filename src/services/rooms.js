@@ -78,6 +78,8 @@ export async function createRoom({ user, name, film, maxParticipants, playbackPe
           online: true,
           cameraEnabled: false,
           microphoneEnabled: false,
+          lastReaction: null,
+          reactionAt: null,
           lastSeen: now,
           joinedAt: now,
         })
@@ -160,6 +162,8 @@ export async function joinRoom({ room, user, cameraEnabled = false, microphoneEn
         online: true,
         cameraEnabled,
         microphoneEnabled,
+        lastReaction: null,
+        reactionAt: null,
         lastSeen: now,
         joinedAt: now,
       })
@@ -213,6 +217,17 @@ export async function setPlaybackState(roomCode, uid, state, position) {
       playback: { state, position, updatedAt: serverTimestamp(), controllerId: uid },
       updatedAt: serverTimestamp(),
     })
+  } catch (error) {
+    throw new Error(friendlyError(error), { cause: error })
+  }
+}
+
+export async function setModeratorRole(roomCode, hostUid, participantUid, promote) {
+  requireDb()
+  if (hostUid === participantUid) throw new Error('The host already has full room permissions.')
+  const participantRef = doc(db, 'rooms', roomCode, 'participants', participantUid)
+  try {
+    await updateDoc(participantRef, { role: promote ? 'moderator' : 'viewer' })
   } catch (error) {
     throw new Error(friendlyError(error), { cause: error })
   }

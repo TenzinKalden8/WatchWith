@@ -19,7 +19,7 @@ flowchart LR
 
 Firebase Auth identifies a user. The browser uses Firestore transactions for room creation and membership changes; rules validate every write, including host identity, participant ownership, participant counts, room capacity, and host transfer. A six-character room code is an unlisted invite capability. A signed-in user with the code can read the room preview, but only a room member can list participants or read member documents. Room listings are disabled.
 
-Presence is a Firestore `online` flag refreshed every 25 seconds while the player is open. A page-hide signal attempts to mark the user offline. Browsers cannot guarantee this cleanup on a crash or network loss, so true disconnect presence and stale-member cleanup remain future work. Camera and microphone are live through browser WebRTC. Playback state is shared through the room document; chat and reactions are still local previews.
+Presence is a Firestore `online` flag refreshed every 25 seconds while the player is open. A page-hide signal attempts to mark the user offline. Browsers cannot guarantee this cleanup on a crash or network loss, so true disconnect presence and stale-member cleanup remain future work. Camera and microphone are live through browser WebRTC. Playback state, room chat, reactions, and moderator roles are shared through Firestore.
 
 Configuration is provided by the four `VITE_FIREBASE_*` variables. Firebase web configuration is visible to clients by design; Firestore security rules are the access boundary. No admin SDK or service account key is placed in the browser. Use a dedicated Firebase project for this app.
 
@@ -89,7 +89,24 @@ sequenceDiagram
   G->>G: Rate-correct small drift; seek only above 500 ms
 ```
 
-The browser may block autoplay until the viewer taps the player once. The Firestore emulator tests cover host-only and everyone playback permissions. Chat and reactions remain the next social-feature phase.
+The browser may block autoplay until the viewer taps the player once. The Firestore emulator tests cover host-only, moderator, and everyone playback permissions.
+
+## Implemented: room chat, reactions, and moderators
+
+```mermaid
+flowchart LR
+  A[Room member] -->|message| M[Firestore messages subcollection]
+  M -->|ordered live query, latest 100| B[Other room members]
+  A -->|emoji + server timestamp| P[Own participant record]
+  P -->|participant snapshot| B
+  H[Host] -->|promote or demote role| P
+  R[Firestore rules] -->|member, author, emoji, host checks| M
+  R -->|own reaction or host role change| P
+```
+
+Chat messages are append-only and carry the authenticated author's UID; rules prevent impersonation, edits, and deletion. Reactions are stored as the sender's most recent emoji plus a server timestamp on their participant record, avoiding a rapidly growing reaction-event collection. Clients animate only fresh reaction timestamps. The host alone can promote or demote a viewer; moderator permissions are read from the server-side participant role when playback rules are evaluated. Audio-level speaking indicators come from WebRTC `getStats()` on inbound audio and are not stored in Firestore.
+
+The chat listener keeps the latest 100 messages. Retention policies, moderation/reporting, and removal of participants remain future work.
 
 ## Provider boundary
 

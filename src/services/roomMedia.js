@@ -47,12 +47,13 @@ export async function requestLocalMedia({ cameraEnabled, microphoneEnabled }) {
 }
 
 export class RoomMediaSession {
-  constructor({ roomCode, localUid, localStream, onRemoteStreams, onConnectionChange, onLocalStream, onError }) {
+  constructor({ roomCode, localUid, localStream, onRemoteStreams, onConnectionChange, onSpeakingChange, onLocalStream, onError }) {
     this.roomCode = roomCode
     this.localUid = localUid
     this.localStream = localStream
     this.onRemoteStreams = onRemoteStreams
     this.onConnectionChange = onConnectionChange
+    this.onSpeakingChange = onSpeakingChange
     this.onLocalStream = onLocalStream
     this.onError = onError
     this.peers = new Map()
@@ -100,6 +101,9 @@ export class RoomMediaSession {
       seenCandidates: new Set(),
       pendingCandidates: [],
       transceivers: new Map(),
+      speakingTimer: null,
+      speakingPollActive: false,
+      isSpeaking: false,
     }
 
     for (const kind of ['audio', 'video']) {
@@ -120,6 +124,7 @@ export class RoomMediaSession {
       if (!event.streams[0] && !stream.getTracks().some((track) => track.id === event.track.id)) stream.addTrack(event.track)
       this.remoteStreams.set(uid, stream)
       this.onRemoteStreams(new Map(this.remoteStreams))
+      if (event.track.kind === 'audio') this.startSpeakingMeter(uid, entry, event.track)
     }
     pc.onconnectionstatechange = () => {
       this.onConnectionChange(uid, pc.connectionState)
@@ -134,6 +139,32 @@ export class RoomMediaSession {
       }
     }
     return entry
+  }
+
+  startSpeakingMeter(uid, entry, audioTrack) {
+    if (entry.speakingTimer) clearInterval(entry.speakingTimer)
+    entry.speakingTimer = window.setInterval(async () => {
+      if (entry.speakingPollActive || this.closed || this.peers.get(uid) !== entry || audioTrack.muted || audioTrack.readyState !== 'live') return
+      entry.speakingPollActive = true
+      try {
+        const stats = await entry.pc.getStats(audioTrack)
+        let audioLevel = 0
+        stats.forEach((report) => {
+          if (report.type === 'inbound-rtp' && (report.kind === 'audio' || report.mediaType === 'audio')) {
+            audioLevel = Math.max(audioLevel, report.audioLevel || 0)
+          }
+        })
+        const speaking = audioLevel > 0.045
+        if (speaking !== entry.isSpeaking) {
+          entry.isSpeaking = speaking
+          this.onSpeakingChange(uid, speaking)
+        }
+      } catch {
+        // Audio-level stats are optional; media should continue if a browser omits them.
+      } finally {
+        entry.speakingPollActive = false
+      }
+    }, 500)
   }
 
   startOffer(uid, pair) {
@@ -189,6 +220,8 @@ export class RoomMediaSession {
   async acceptOffer(uid, oldEntry, data) {
     if (this.closed || this.peers.get(uid) !== oldEntry) return
     const pair = oldEntry.pair
+    if (oldEntry.speakingTimer) clearInterval(oldEntry.speakingTimer)
+    if (oldEntry.isSpeaking) this.onSpeakingChange(uid, false)
     oldEntry.pc?.close()
     this.remoteStreams.delete(uid)
     this.onRemoteStreams(new Map(this.remoteStreams))
@@ -258,6 +291,8 @@ export class RoomMediaSession {
 
   closePeer(uid, entry) {
     entry.stopSignal?.()
+    if (entry.speakingTimer) clearInterval(entry.speakingTimer)
+    if (entry.isSpeaking) this.onSpeakingChange(uid, false)
     entry.pc?.close()
     this.peers.delete(uid)
     this.remoteStreams.delete(uid)

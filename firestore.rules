@@ -165,7 +165,7 @@ service cloud.firestore {
           && request.auth.uid == userId
           && request.resource.data.keys().hasOnly([
             'uid', 'displayName', 'avatarUrl', 'role', 'online', 'cameraEnabled',
-            'microphoneEnabled', 'lastSeen', 'joinedAt'
+          'microphoneEnabled', 'lastSeen', 'joinedAt', 'lastReaction', 'reactionAt'
           ])
           && request.resource.data.uid == userId
           && request.resource.data.displayName is string
@@ -174,6 +174,8 @@ service cloud.firestore {
           && request.resource.data.online == true
           && request.resource.data.cameraEnabled is bool
           && request.resource.data.microphoneEnabled is bool
+          && (!('lastReaction' in request.resource.data.keys()) || request.resource.data.lastReaction == null)
+          && (!('reactionAt' in request.resource.data.keys()) || request.resource.data.reactionAt == null)
           && request.resource.data.joinedAt == request.time
           && request.resource.data.lastSeen == request.time
           && (
@@ -190,17 +192,31 @@ service cloud.firestore {
         allow update: if signedIn() && (
           (request.auth.uid == userId
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'online', 'lastSeen', 'cameraEnabled', 'microphoneEnabled'
+              'online', 'lastSeen', 'cameraEnabled', 'microphoneEnabled', 'lastReaction', 'reactionAt'
             ])
             && request.resource.data.online is bool
             && (!('cameraEnabled' in request.resource.data.keys()) || request.resource.data.cameraEnabled is bool)
             && (!('microphoneEnabled' in request.resource.data.keys()) || request.resource.data.microphoneEnabled is bool)
-            && request.resource.data.lastSeen == request.time)
+            && (!('lastReaction' in request.resource.data.keys())
+              || request.resource.data.lastReaction == null
+              || request.resource.data.lastReaction in ['❤️', '😂', '😭', '🔥', '😱', '👏', '💀'])
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['reactionAt'])
+              || request.resource.data.reactionAt == request.time)
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastSeen'])
+              || request.resource.data.lastSeen == request.time))
           || (isHost(roomCode)
             && resource.data.role == 'viewer'
             && request.resource.data.role == 'host'
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role'])
             && getAfter(roomPath(roomCode)).data.hostId == userId)
+          || (isHost(roomCode)
+            && resource.data.role == 'viewer'
+            && request.resource.data.role == 'moderator'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role']))
+          || (isHost(roomCode)
+            && resource.data.role == 'moderator'
+            && request.resource.data.role == 'viewer'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role']))
         );
 
         allow delete: if signedIn() && request.auth.uid == userId
@@ -266,6 +282,24 @@ service cloud.firestore {
           );
 
         allow delete: if false;
+      }
+
+      match /messages/{messageId} {
+        allow get, list: if isParticipant(roomCode);
+
+        allow create: if isParticipant(roomCode)
+          && request.resource.data.keys().hasOnly(['uid', 'displayName', 'avatarUrl', 'text', 'createdAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 80
+          && (request.resource.data.avatarUrl == null || request.resource.data.avatarUrl is string)
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 500
+          && request.resource.data.createdAt == request.time;
+
+        allow update, delete: if false;
       }
     }
   }

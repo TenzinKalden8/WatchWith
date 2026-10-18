@@ -44,12 +44,16 @@ function App() {
   const [localStream, setLocalStream] = useState(null)
   const [remoteStreams, setRemoteStreams] = useState(new Map())
   const [peerStates, setPeerStates] = useState({})
+  const [speakingUsers, setSpeakingUsers] = useState({})
   const [mediaPreviewReady, setMediaPreviewReady] = useState(false)
   const videoRef = useRef(null)
   const toastTimer = useRef(null)
   const mediaSession = useRef(null)
   const participantsRef = useRef(participants)
   const preservePreview = useRef(false)
+  const reactionSeen = useRef(new Map())
+  const reactionTimer = useRef(null)
+  const chatListRef = useRef(null)
 
   const notify = (message) => {
     setToast(message)
@@ -58,6 +62,7 @@ function App() {
   }
 
   useEffect(() => () => clearTimeout(toastTimer.current), [])
+  useEffect(() => () => clearTimeout(reactionTimer.current), [])
   useEffect(() => {
     if (!firebaseConfigured) return undefined
     return watchAuth((currentUser) => { setUser(currentUser); setAuthLoading(false) })
@@ -102,6 +107,36 @@ function App() {
   }, [screen, room?.code, user?.uid])
 
   useEffect(() => {
+    if (screen !== 'cinema' || !room?.code) return undefined
+    let active = true
+    let stopMessages = () => {}
+    import('./services/social').then(({ watchMessages }) => {
+      if (!active) return
+      stopMessages = watchMessages(room.code, setMessages, (error) => {
+        if (active) setRoomError(error.message || 'Could not load room chat.')
+      })
+    }).catch((error) => { if (active) setRoomError(error.message || 'Could not start room chat.') })
+    return () => { active = false; stopMessages(); setMessages([]) }
+  }, [screen, room?.code])
+
+  useEffect(() => {
+    const list = chatListRef.current
+    if (list) list.scrollTop = list.scrollHeight
+  }, [messages])
+
+  useEffect(() => {
+    participants.forEach((participant) => {
+      const changedAt = participant.reactionAt?.toMillis?.()
+      if (!participant.lastReaction || !changedAt || reactionSeen.current.get(participant.uid) === changedAt) return
+      reactionSeen.current.set(participant.uid, changedAt)
+      if (Date.now() - changedAt > 5000) return
+      clearTimeout(reactionTimer.current)
+      setReaction(participant.lastReaction)
+      reactionTimer.current = setTimeout(() => setReaction(''), 1800)
+    })
+  }, [participants])
+
+  useEffect(() => {
     if (screen !== 'cinema' || !room?.playback) return undefined
     const synchronize = () => {
       const video = videoRef.current
@@ -128,7 +163,8 @@ function App() {
         localUid: user.uid,
         localStream,
         onRemoteStreams: setRemoteStreams,
-        onConnectionChange: (uid, state) => setPeerStates((previous) => ({ ...previous, [uid]: state })),
+        onConnectionChange: (uid, state) => setPeerStates((previous) => previous[uid] === state ? previous : ({ ...previous, [uid]: state })),
+        onSpeakingChange: (uid, speaking) => setSpeakingUsers((previous) => previous[uid] === speaking ? previous : ({ ...previous, [uid]: speaking })),
         onLocalStream: setLocalStream,
         onError: (message) => setRoomError(message),
       })
@@ -141,6 +177,7 @@ function App() {
       if (mediaSession.current === session) mediaSession.current = null
       setRemoteStreams(new Map())
       setPeerStates({})
+      setSpeakingUsers({})
     }
   }, [screen, room?.code, user?.uid, localStream])
 
@@ -368,13 +405,32 @@ function App() {
     finally { setRoomBusy(false) }
   }
 
-  const sendMessage = (event) => {
+  const sendMessage = async (event) => {
     event.preventDefault()
     if (!draft.trim()) return
-    setMessages((items) => [...items, { name: getDisplayName(user), text: draft.trim(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }])
+    const text = draft.trim()
     setDraft('')
+    try {
+      const { sendRoomMessage } = await import('./services/social')
+      await sendRoomMessage({ roomCode: room.code, user, displayName: getDisplayName(user), text })
+    } catch (error) { notify(error.message || 'Could not send that message.') }
   }
-  const sendReaction = (emoji) => { setReaction(emoji); setTimeout(() => setReaction(''), 1600) }
+  const sendReaction = async (emoji) => {
+    clearTimeout(reactionTimer.current)
+    setReaction(emoji)
+    reactionTimer.current = setTimeout(() => setReaction(''), 1800)
+    try {
+      const { sendRoomReaction } = await import('./services/social')
+      await sendRoomReaction(room.code, user.uid, emoji)
+    } catch (error) { notify(error.message || 'Could not send that reaction.') }
+  }
+  const changeModeratorRole = async (participant, promote) => {
+    try {
+      const { setModeratorRole } = await import('./services/rooms')
+      await setModeratorRole(room.code, user.uid, participant.uid, promote)
+      notify(promote ? `${participant.displayName} is now a moderator.` : `${participant.displayName} is now a viewer.`)
+    } catch (error) { notify(error.message || 'Could not update this participant role.') }
+  }
 
   if (authLoading) return <main className="auth-page"><div className="auth-card"><span className="eyebrow">SOCIAL CINEMA</span><h1>Finding your seat…</h1></div></main>
   if (!firebaseConfigured) return <main className="auth-page"><section className="firebase-setup"><span className="eyebrow">PHASE 2 SETUP</span><h1>Connect your cinema.</h1><p>Authentication and rooms are ready to use once a Firebase web app is connected.</p><ol><li>Create a Firebase project for Social Cinema.</li><li>Register a web app, enable Email/Password Authentication, and create a Firestore database.</li><li>Add the Firebase web configuration to <code>.env.local</code> and GitHub Actions variables.</li></ol><p>Follow the Firebase setup section in the README. Never commit private credentials.</p></section></main>
@@ -401,7 +457,7 @@ function App() {
                         : 'WAITING FOR VIDEO'
           return <div className={`camera-tile participant-tile participant-tile-${index}`} key={participant.uid}>
             {hasVideo ? <MediaVideo stream={stream} muted={isLocal}/> : <div className={`avatar ${['art-coral', 'art-blue', 'art-gold', 'art-violet'][index]}`}>{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div>}
-            <div className="tile-name"><span className={peerStates[participant.uid] === 'connected' ? 'voice-dot' : ''}/>{isLocal ? 'You' : participant.displayName}{participant.role === 'host' ? ' · HOST' : ''}</div>
+            <div className="tile-name"><span className={speakingUsers[participant.uid] ? 'voice-dot' : ''}/>{isLocal ? 'You' : participant.displayName}{participant.role === 'host' ? ' · HOST' : ''}</div>
             <span className="tile-status">{isLocal && hasVideo ? 'LIVE' : mediaStatus}</span>
             {!microphoneEnabled && <span className="tile-mute">MIC OFF</span>}
           </div>
@@ -409,11 +465,11 @@ function App() {
         {participants.length < 2 && <div className="empty-friends">The movie is ready. Invite a friend to take the other seat.</div>}
         <div className="reaction-float" aria-live="polite">{reaction}</div><div className="movie-caption"><span className="sound-bars"><i/><i/><i/><i/></span><span>Movie night, together</span></div>
       </section>
-      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'} disabled={!canControlPlayback}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} disabled={!canControlPlayback} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} onPointerUp={saveSeek} onKeyUp={saveSeek} aria-label="Movie position"/><button className="player-icon volume" onClick={() => notify('Volume controls are on your device')} aria-label="Volume">◖))</button></div><div className="social-controls"><div className="emoji-row">{['❤️', '😂', '😭', '🔥', '😱'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`}>{emoji}</button>)}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone">{mic ? '♩' : '♩̸'}</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera">{cam ? '◉' : '⊘'}</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants">♙<span className="people-count">{participants.length}</span></button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings">⚙</button></div></footer>
+      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'} disabled={!canControlPlayback}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} disabled={!canControlPlayback} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} onPointerUp={saveSeek} onKeyUp={saveSeek} aria-label="Movie position"/><button className="player-icon volume" onClick={() => notify('Volume controls are on your device')} aria-label="Volume">◖))</button></div><div className="social-controls"><div className="emoji-row">{['❤️', '😂', '😭', '🔥', '😱', '👏', '💀'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`}>{emoji}</button>)}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone">{mic ? '♩' : '♩̸'}</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera">{cam ? '◉' : '⊘'}</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants">♙<span className="people-count">{participants.length}</span></button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings">⚙</button></div></footer>
       {roomError && <div role="alert" className="room-error-banner">{roomError}<button onClick={() => setRoomError('')}>×</button></div>}
-      {chatOpen && <aside className="floating-panel chat-panel"><div className="panel-heading"><div><span className="panel-kicker">THE LOBBY</span><h2>Room chat <small>{participants.length}</small></h2></div><button className="icon-button" onClick={() => setChatOpen(false)}>×</button></div><div className="message-list">{messages.length ? messages.map((message, index) => <div className="message" key={`${message.time}-${index}`}><div className="mini-avatar art-violet">{message.name.slice(0, 2).toUpperCase()}</div><div><div className="message-top"><b>{message.name}</b><time>{message.time}</time></div><p>{message.text}</p></div></div>) : <p className="empty-chat">Room chat becomes real in the Social Features phase. Send a quick note in this local preview.</p>}</div><form className="chat-compose" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Say something…" aria-label="Chat message"/><button type="submit" aria-label="Send message">↑</button></form></aside>}
-      {peopleOpen && <aside className="floating-panel people-panel"><div className="panel-heading"><div><span className="panel-kicker">AROUND THE SCREEN</span><h2>In this cinema <small>{participants.length} / {room?.maxParticipants || maxPeople}</small></h2></div><button className="icon-button" onClick={() => setPeopleOpen(false)}>×</button></div>{participants.map((participant) => <div className="participant-row" key={participant.uid}><div className="mini-avatar art-violet">{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div><div><b>{participant.displayName} {participant.role === 'host' && <span className="host-tag">HOST</span>}</b><small>{participant.uid === user.uid ? 'You' : participant.online ? 'Online' : 'Last seen recently'} · {participant.cameraEnabled ? 'Camera on' : 'Camera off'} · {participant.microphoneEnabled ? 'Mic on' : 'Muted'}</small></div><span className="participant-signal">{participant.online ? '●' : '○'}</span></div>)}<button className="panel-invite" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>＋ Copy invite link</button></aside>}
-      {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" onClick={(event) => event.stopPropagation()}><div className="panel-heading"><div><span className="panel-kicker">MAKE IT YOURS</span><h2>Cinema settings</h2></div><button className="icon-button" onClick={() => setSettingsOpen(false)}>×</button></div><label className="setting-label">Viewing mode</label><div className="mode-picker">{['Cinema', 'Social', 'Focus'].map((item) => <button className={mode === item ? 'active' : ''} key={item} onClick={() => setMode(item)}><b>{item === 'Cinema' ? '▣' : item === 'Social' ? '▦' : '◫'}</b><span>{item}</span><small>{item === 'Cinema' ? 'Movie takes the stage' : item === 'Social' ? 'Bring friends closer' : 'Just the movie'}</small></button>)}</div><label className="setting-label">Who can control playback?</label><select value={room?.playbackPermission || permission} disabled><option>Host only</option><option>Host + moderators</option><option>Everyone</option></select><div className="settings-note"><span>🔒</span><p>Your cinema is private. Only people with the invite link can join. Changes to settings are not available in this phase.</p></div><button className="danger-button" onClick={handleLeaveRoom}>{room?.hostId === user.uid ? 'End cinema and transfer host' : 'Leave cinema'}</button></section></div>}
+      {chatOpen && <aside className="floating-panel chat-panel"><div className="panel-heading"><div><span className="panel-kicker">THE LOBBY</span><h2>Room chat <small>{participants.length}</small></h2></div><button className="icon-button" onClick={() => setChatOpen(false)}>×</button></div><div className="message-list" ref={chatListRef}>{messages.length ? messages.map((message) => <div className="message" key={message.id}><div className="mini-avatar art-violet">{message.displayName.slice(0, 2).toUpperCase()}</div><div><div className="message-top"><b>{message.displayName}</b><time>{message.time}</time></div><p>{message.text}</p></div></div>) : <p className="empty-chat">Be the first to say something in this cinema.</p>}</div><form className="chat-compose" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={500} placeholder="Say something…" aria-label="Chat message"/><button type="submit" aria-label="Send message">↑</button></form></aside>}
+      {peopleOpen && <aside className="floating-panel people-panel"><div className="panel-heading"><div><span className="panel-kicker">AROUND THE SCREEN</span><h2>In this cinema <small>{participants.length} / {room?.maxParticipants || maxPeople}</small></h2></div><button className="icon-button" onClick={() => setPeopleOpen(false)}>×</button></div>{participants.map((participant) => <div className="participant-row" key={participant.uid}><div className="mini-avatar art-violet">{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div><div><b>{participant.displayName} {participant.role === 'host' && <span className="host-tag">HOST</span>}{participant.role === 'moderator' && <span className="host-tag">MOD</span>}</b><small>{participant.uid === user.uid ? 'You' : participant.online ? 'Online' : 'Last seen recently'} · {participant.cameraEnabled ? 'Camera on' : 'Camera off'} · {participant.microphoneEnabled ? 'Mic on' : 'Muted'}</small></div><span className="participant-signal">{participant.online ? '●' : '○'}</span>{room?.hostId === user.uid && participant.uid !== user.uid && <button className="moderator-action" onClick={() => changeModeratorRole(participant, participant.role !== 'moderator')}>{participant.role === 'moderator' ? 'Remove moderator' : 'Make moderator'}</button>}</div>)}<button className="panel-invite" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>＋ Copy invite link</button></aside>}
+      {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" onClick={(event) => event.stopPropagation()}><div className="panel-heading"><div><span className="panel-kicker">MAKE IT YOURS</span><h2>Cinema settings</h2></div><button className="icon-button" onClick={() => setSettingsOpen(false)}>×</button></div><label className="setting-label">Viewing mode</label><div className="mode-picker">{['Cinema', 'Social', 'Focus'].map((item) => <button className={mode === item ? 'active' : ''} key={item} onClick={() => setMode(item)}><b>{item === 'Cinema' ? '▣' : item === 'Social' ? '▦' : '◫'}</b><span>{item}</span><small>{item === 'Cinema' ? 'Movie takes the stage' : item === 'Social' ? 'Bring friends closer' : 'Just the movie'}</small></button>)}</div><label className="setting-label">Who can control playback?</label><select value={room?.playbackPermission || permission} disabled><option>Host only</option><option>Host + moderators</option><option>Everyone</option></select><div className="settings-note"><span>🔒</span><p>This private cinema is invite-only. Playback permissions are set when the room is created; the host can promote or demote moderators in the participants panel.</p></div><button className="danger-button" onClick={handleLeaveRoom}>{room?.hostId === user.uid ? 'End cinema and transfer host' : 'Leave cinema'}</button></section></div>}
       {toast && <div className="toast-note">{toast}</div>}
     </main>
   }

@@ -57,6 +57,8 @@ function memberRecord(uid, role) {
     online: true,
     cameraEnabled: false,
     microphoneEnabled: false,
+    lastReaction: null,
+    reactionAt: null,
     lastSeen: now,
     joinedAt: now,
   }
@@ -199,6 +201,66 @@ test('everyone playback permission allows a member to control playback', async (
   await assertSucceeds(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), {
     playback: { state: 'playing', position: 18, updatedAt: serverTimestamp(), controllerId: 'guest-b' },
     updatedAt: serverTimestamp(),
+  }))
+})
+
+test('room members can exchange chat messages, but cannot impersonate another sender', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const guestDb = testEnv.authenticatedContext('guest-b').firestore()
+  const outsiderDb = testEnv.authenticatedContext('outsider').firestore()
+  const messageRef = doc(guestDb, 'rooms', 'ABC234', 'messages', 'message-1')
+  await assertSucceeds(setDoc(messageRef, {
+    uid: 'guest-b',
+    displayName: 'Guest B',
+    avatarUrl: null,
+    text: 'Hello from the back row',
+    createdAt: serverTimestamp(),
+  }))
+  await assertFails(setDoc(doc(guestDb, 'rooms', 'ABC234', 'messages', 'spoofed'), {
+    uid: 'host-a',
+    displayName: 'Host',
+    avatarUrl: null,
+    text: 'Impersonated message',
+    createdAt: serverTimestamp(),
+  }))
+  await assertFails(getDoc(doc(outsiderDb, 'rooms', 'ABC234', 'messages', 'message-1')))
+})
+
+test('host can promote and demote moderators, and moderators control playback only when enabled', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const hostDb = testEnv.authenticatedContext('host-a').firestore()
+  const viewerDb = testEnv.authenticatedContext('guest-b').firestore()
+  const participantRef = doc(hostDb, 'rooms', 'ABC234', 'participants', 'guest-b')
+  await assertSucceeds(updateDoc(participantRef, { role: 'moderator' }))
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'rooms', 'ABC234'), { playbackPermission: 'Host + moderators' })
+  })
+  await assertSucceeds(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), {
+    playback: { state: 'playing', position: 22, updatedAt: serverTimestamp(), controllerId: 'guest-b' },
+    updatedAt: serverTimestamp(),
+  }))
+  await assertSucceeds(updateDoc(participantRef, { role: 'viewer' }))
+  await assertFails(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), {
+    playback: { state: 'paused', position: 24, updatedAt: serverTimestamp(), controllerId: 'guest-b' },
+    updatedAt: serverTimestamp(),
+  }))
+})
+
+test('participants can publish only supported reactions to their own records', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const guestDb = testEnv.authenticatedContext('guest-b').firestore()
+  const hostDb = testEnv.authenticatedContext('host-a').firestore()
+  await assertSucceeds(updateDoc(doc(guestDb, 'rooms', 'ABC234', 'participants', 'guest-b'), {
+    lastReaction: '😂',
+    reactionAt: serverTimestamp(),
+  }))
+  await assertFails(updateDoc(doc(guestDb, 'rooms', 'ABC234', 'participants', 'host-a'), {
+    lastReaction: '🔥',
+    reactionAt: serverTimestamp(),
+  }))
+  await assertFails(updateDoc(doc(hostDb, 'rooms', 'ABC234', 'participants', 'host-a'), {
+    lastReaction: 'not an emoji',
+    reactionAt: serverTimestamp(),
   }))
 })
 
