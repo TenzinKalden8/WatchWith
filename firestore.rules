@@ -29,7 +29,7 @@ service cloud.firestore {
     function validRoomShape(data) {
       return data.keys().hasOnly([
         'name', 'hostId', 'hostName', 'maxParticipants', 'participantCount', 'participantIds',
-        'playbackPermission', 'content', 'status', 'privacy', 'createdAt', 'updatedAt'
+        'playbackPermission', 'playback', 'content', 'status', 'privacy', 'createdAt', 'updatedAt'
       ])
       && data.name is string && data.name.size() > 0 && data.name.size() <= 60
       && data.hostId is string
@@ -49,8 +49,27 @@ service cloud.firestore {
           && data.content.sourceUrl == 'https://storage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4')
       )
       && data.updatedAt == request.time
+      && (!('playback' in data.keys()) || validPlayback(data.playback))
       && data.status in ['active', 'closed']
       && data.privacy == 'private';
+    }
+
+    function validPlayback(data) {
+      return data is map
+        && data.keys().hasOnly(['state', 'position', 'updatedAt', 'controllerId'])
+        && data.state in ['playing', 'paused']
+        && data.position is number
+        && data.position >= 0
+        && data.position <= 43200
+        && data.updatedAt == request.time
+        && data.controllerId is string;
+    }
+
+    function mayControlPlayback(roomCode) {
+      let role = get(participantPath(roomCode, request.auth.uid)).data.role;
+      return role == 'host'
+        || resource.data.playbackPermission == 'Everyone'
+        || (resource.data.playbackPermission == 'Host + moderators' && role == 'moderator');
     }
 
     match /users/{userId} {
@@ -120,6 +139,15 @@ service cloud.firestore {
               && request.resource.data.status == resource.data.status
               && getAfter(participantPath(roomCode, request.resource.data.hostId)).data.role == 'host')
           )
+        )
+        || (
+          resource.data.status == 'active'
+          && isParticipant(roomCode)
+          && mayControlPlayback(roomCode)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['playback', 'updatedAt'])
+          && validRoomShape(request.resource.data)
+          && validPlayback(request.resource.data.playback)
+          && request.resource.data.playback.controllerId == request.auth.uid
         )
       );
 

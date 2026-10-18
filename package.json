@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test:unit": "node --test test/playbackSync.test.js",
     "test:rules": "firebase emulators:exec --only firestore --project demo-social-cinema \"node --test test/firestore.rules.test.js\"",
     "preview": "vite preview"
   },

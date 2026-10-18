@@ -51,6 +51,12 @@ export async function createRoom({ user, name, film, maxParticipants, playbackPe
           participantCount: 1,
           participantIds: [user.uid],
           playbackPermission,
+          playback: {
+            state: 'paused',
+            position: 0,
+            updatedAt: now,
+            controllerId: user.uid,
+          },
           content: {
             provider: 'test',
             contentId: film.id,
@@ -195,6 +201,21 @@ export async function setParticipantMedia(roomCode, uid, cameraEnabled, micropho
     microphoneEnabled,
     lastSeen: serverTimestamp(),
   })
+}
+
+export async function setPlaybackState(roomCode, uid, state, position) {
+  requireDb()
+  if (!['playing', 'paused'].includes(state) || !Number.isFinite(position) || position < 0) {
+    throw new Error('That playback update is invalid.')
+  }
+  try {
+    await updateDoc(doc(db, 'rooms', roomCode), {
+      playback: { state, position, updatedAt: serverTimestamp(), controllerId: uid },
+      updatedAt: serverTimestamp(),
+    })
+  } catch (error) {
+    throw new Error(friendlyError(error), { cause: error })
+  }
 }
 
 export async function leaveRoom(roomCode, uid) {

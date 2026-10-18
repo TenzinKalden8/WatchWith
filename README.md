@@ -1,6 +1,6 @@
 # Social Cinema
 
-A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. Authentication and rooms use Firebase; camera and microphone use browser WebRTC for small rooms. Shared chat, reactions, and synchronized playback remain later phases.
+A mobile-first social cinema prototype: create a private watch room, choose a legally usable Blender test film, invite friends, and settle in around a landscape-first player. Authentication, rooms, presence, camera/microphone, and synchronized playback use Firebase and browser WebRTC for small rooms. Shared chat and reactions remain later phases.
 
 ## Run locally
 
@@ -20,7 +20,7 @@ The public preview deploys from `main` using GitHub Pages. In the repository, se
 - `src/App.css` contains the responsive, portrait-to-landscape layouts and cinema player styling.
 - Test movie entries use a provider-neutral content shape (`id`, `title`, `provider`, `src`, `art`). A small provider registry names the MVP adapter. The video files are public Blender Foundation sample videos served by Google's public sample bucket; their availability depends on that third party.
 - The player loads the video directly in each browser. No movie video is relayed through an application server.
-- Auth accounts, room records, capacity, participant lists, online heartbeats, host handoff, and camera/microphone media are real when Firebase is configured. Chat, reactions, and synchronized playback are still local prototypes.
+- Auth accounts, room records, capacity, participant lists, online heartbeats, host handoff, camera/microphone media, and shared playback are real when Firebase is configured. Chat and reactions are still local prototypes.
 - Camera and microphone use browser `getUserMedia` and a small-room WebRTC peer mesh. Firestore stores only pairwise offer/answer and ICE signaling; audio/video tracks travel directly between participants. Camera permission is requested on the pre-join screen.
 
 ## Phase roadmap
@@ -47,13 +47,13 @@ The Vite scripts are `npm run dev`, `npm run build`, `npm run lint`, `npm run te
 - Media uses direct peer connections with public STUN and no TURN relay. Some NATs, firewalls, and mobile networks can block direct media; a credentialed TURN service or managed SFU is needed for more reliable connections and larger rooms.
 - The mesh targets small rooms (2–6 people). Each participant sends media directly to every peer, so device and upload load grows with room size.
 - Chat, reactions and playback controls are not shared between clients yet.
-- Playback is local to one browser, has no shared authoritative state, and may require network access to Google's sample bucket.
+- Playback state is shared through Firestore. Clients estimate the current position from the last authoritative update, correct small drift by adjusting playback rate, and seek only when drift exceeds 500 ms. Videos may require network access to Google's sample bucket.
 - Google Fonts are fetched externally; system fonts are used if unavailable.
 
-## Firebase setup (Phase 2 and 3)
+## Firebase setup (Phases 2–4)
 
 The dedicated Firebase project is `watchwith-social-cinema` (console: https://console.firebase.google.com/project/watchwith-social-cinema). Its Web app is registered, the default Firestore database is in `asia-south1`, Firestore security rules are deployed, and Email/Password Authentication is enabled. The `localhost` and `tenzinkalden8.github.io` domains are authorized. `.firebaserc` selects this project for Firebase CLI commands.
 
 For local development, `.env.local` is already configured on the developer machine and is intentionally gitignored. To configure a new checkout, copy `.env.example` to `.env.local` and use Firebase Project settings → Your apps → SDK setup. For GitHub Pages, add these four public configuration values under **WatchWith → Settings → Secrets and variables → Actions → Variables** using names `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`; then rerun the Pages workflow. These are public web-app configuration values; database security comes from the rules. Never add service account keys to the browser or repository.
 
-The Firebase CLI emulator configuration is in `firebase.json`. For local UI development, use demo values for all four required Firebase config fields and set `VITE_USE_FIREBASE_EMULATORS=true` in `.env.local`, then run `firebase emulators:start --only auth,firestore --project demo-social-cinema`. The Firestore rule suite is `npm run test:rules` and needs Java 21+ for the current Firebase emulator. It covers room creation, invite previews, membership privacy, capacity, participant presence writes, unauthorized controls, and host handoff.
+The Firebase CLI emulator configuration is in `firebase.json`. For local UI development, use demo values for all four required Firebase config fields and set `VITE_USE_FIREBASE_EMULATORS=true` in `.env.local`, then run `firebase emulators:start --only auth,firestore --project demo-social-cinema`. Run the drift algorithm tests with `npm run test:unit`. The Firestore rule suite is `npm run test:rules` and needs Java 21+ for the current Firebase emulator. It covers room creation, invite previews, membership privacy, capacity, participant presence writes, playback authorization, and host handoff. Deploy `firestore.rules` when updating an existing Firebase project so playback commands are accepted.

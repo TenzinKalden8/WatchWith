@@ -6,6 +6,7 @@ import MediaVideo from './components/MediaVideo'
 import { firebaseConfigured } from './firebase/config'
 import { testVideoProvider } from './providers/videoProviders'
 import { createAccount, getDisplayName, getInitials, signIn, signOutCurrentUser, watchAuth } from './services/auth'
+import { synchronizeVideo } from './services/playbackSync'
 
 const films = testVideoProvider.listContent()
 const inviteCode = new URLSearchParams(location.search).get('room')?.toUpperCase() || ''
@@ -101,6 +102,22 @@ function App() {
   }, [screen, room?.code, user?.uid])
 
   useEffect(() => {
+    if (screen !== 'cinema' || !room?.playback) return undefined
+    const synchronize = () => {
+      const video = videoRef.current
+      if (!video) return
+      const { playRequest } = synchronizeVideo(video, room.playback)
+      playRequest?.catch?.(() => {
+        setRoomError('Your browser blocked synchronized playback. Tap the movie once to allow it to start.')
+      })
+    }
+    synchronize()
+    if (room.playback.state !== 'playing') return undefined
+    const timer = window.setInterval(synchronize, 2000)
+    return () => window.clearInterval(timer)
+  }, [screen, room?.code, room?.playback?.state, room?.playback?.position, room?.playback?.updatedAt])
+
+  useEffect(() => {
     if (screen !== 'cinema' || !room?.code || !user || !localStream) return undefined
     let session
     let cancelled = false
@@ -174,11 +191,43 @@ function App() {
 
   const inviteUrl = () => `${location.origin}${import.meta.env.BASE_URL}?room=${code}`
   const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+  const currentMember = participants.find((participant) => participant.uid === user?.uid)
+  const canControlPlayback = room?.hostId === user?.uid
+    || room?.playbackPermission === 'Everyone'
+    || (room?.playbackPermission === 'Host + moderators' && currentMember?.role === 'moderator')
+  const savePlayback = async (state, position) => {
+    if (!room?.code || !user) return
+    try {
+      const { setPlaybackState } = await import('./services/rooms')
+      await setPlaybackState(room.code, user.uid, state, position)
+    } catch (error) {
+      setRoomError(error.message || 'Could not update shared playback.')
+    }
+  }
   const togglePlayback = () => {
     const video = videoRef.current
     if (!video) return notify('The sample player is not ready yet.')
-    if (video.paused) video.play().catch(() => notify('Video could not load. Check your connection.'))
+    if (!canControlPlayback) {
+      if (room?.playback?.state === 'playing' && video.paused) {
+        video.play().catch(() => setRoomError('Tap the movie once more to allow synchronized playback.'))
+      } else notify('The host controls playback in this cinema.')
+      return
+    }
+    const state = video.paused ? 'playing' : 'paused'
+    const position = video.currentTime || 0
+    if (state === 'playing') video.play().catch(() => notify('Video could not load. Check your connection.'))
     else video.pause()
+    void savePlayback(state, position)
+  }
+  const saveSeek = () => {
+    if (!canControlPlayback || !videoRef.current) return
+    void savePlayback(videoRef.current.paused ? 'paused' : 'playing', videoRef.current.currentTime)
+  }
+  const handleVideoMetadata = (event) => {
+    setDuration(event.currentTarget.duration || 540)
+    if (!room?.playback) return
+    const { playRequest } = synchronizeVideo(event.currentTarget, room.playback)
+    playRequest?.catch?.(() => setRoomError('Your browser blocked synchronized playback. Tap the movie once to allow it to start.'))
   }
 
   const submitAuth = async ({ mode: requestedMode, displayName, email, password }) => {
@@ -334,7 +383,7 @@ function App() {
   if (screen === 'cinema') {
     return <main className={`cinema-page mode-${mode.toLowerCase()}`}>
       <header className="cinema-top"><button className="back-button" disabled={roomBusy} onClick={handleLeaveRoom}>← <span>Leave cinema</span></button><div className="room-heading"><span className="live-dot"/><div><b>{room?.name || roomName}</b><small>Private cinema · <span>{room?.hostId === user.uid ? '👑 You’re hosting' : `Hosted by ${participants.find((participant) => participant.role === 'host')?.displayName || 'your friend'}`}</span></small></div></div><div className="top-actions"><button className="icon-button connection" title="Room connected">◉ <span>{participants.filter((participant) => participant.online).length} online</span></button><button className="invite-button" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>Invite friends <span>↗</span></button><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Room settings">⚙</button></div></header>
-      <section className="cinema-stage"><div className="film-meta"><span className="provider-pill">TEST VIDEO</span><b>{film.title}</b><small>{film.detail}</small></div><div className="screen-wrap"><div className="movie-screen"><video ref={videoRef} src={film.src} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 540)} onClick={togglePlayback}/>{!playing && <button className="big-play" onClick={togglePlayback} aria-label="Play movie">▶</button>}<div className="film-vignette"/></div></div>
+      <section className="cinema-stage"><div className="film-meta"><span className="provider-pill">TEST VIDEO</span><b>{film.title}</b><small>{film.detail}</small></div><div className="screen-wrap"><div className="movie-screen"><video ref={videoRef} src={film.src} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onLoadedMetadata={handleVideoMetadata} onClick={togglePlayback}/>{!playing && <button className="big-play" onClick={togglePlayback} aria-label="Play movie">▶</button>}<div className="film-vignette"/></div></div>
         {mode !== 'Focus' && <div className="friend-rail" aria-label="Cinema participants">{participants.slice(0, mode === 'Social' ? 4 : 2).map((participant, index) => {
           const isLocal = participant.uid === user.uid
           const stream = isLocal ? localStream : remoteStreams.get(participant.uid)
@@ -360,7 +409,7 @@ function App() {
         {participants.length < 2 && <div className="empty-friends">The movie is ready. Invite a friend to take the other seat.</div>}
         <div className="reaction-float" aria-live="polite">{reaction}</div><div className="movie-caption"><span className="sound-bars"><i/><i/><i/><i/></span><span>Movie night, together</span></div>
       </section>
-      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} aria-label="Movie position"/><button className="player-icon volume" onClick={() => notify('Volume controls are on your device')} aria-label="Volume">◖))</button></div><div className="social-controls"><div className="emoji-row">{['❤️', '😂', '😭', '🔥', '😱'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`}>{emoji}</button>)}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone">{mic ? '♩' : '♩̸'}</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera">{cam ? '◉' : '⊘'}</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants">♙<span className="people-count">{participants.length}</span></button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings">⚙</button></div></footer>
+      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'} disabled={!canControlPlayback}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} disabled={!canControlPlayback} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} onPointerUp={saveSeek} onKeyUp={saveSeek} aria-label="Movie position"/><button className="player-icon volume" onClick={() => notify('Volume controls are on your device')} aria-label="Volume">◖))</button></div><div className="social-controls"><div className="emoji-row">{['❤️', '😂', '😭', '🔥', '😱'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`}>{emoji}</button>)}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone">{mic ? '♩' : '♩̸'}</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera">{cam ? '◉' : '⊘'}</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants">♙<span className="people-count">{participants.length}</span></button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings">⚙</button></div></footer>
       {roomError && <div role="alert" className="room-error-banner">{roomError}<button onClick={() => setRoomError('')}>×</button></div>}
       {chatOpen && <aside className="floating-panel chat-panel"><div className="panel-heading"><div><span className="panel-kicker">THE LOBBY</span><h2>Room chat <small>{participants.length}</small></h2></div><button className="icon-button" onClick={() => setChatOpen(false)}>×</button></div><div className="message-list">{messages.length ? messages.map((message, index) => <div className="message" key={`${message.time}-${index}`}><div className="mini-avatar art-violet">{message.name.slice(0, 2).toUpperCase()}</div><div><div className="message-top"><b>{message.name}</b><time>{message.time}</time></div><p>{message.text}</p></div></div>) : <p className="empty-chat">Room chat becomes real in the Social Features phase. Send a quick note in this local preview.</p>}</div><form className="chat-compose" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Say something…" aria-label="Chat message"/><button type="submit" aria-label="Send message">↑</button></form></aside>}
       {peopleOpen && <aside className="floating-panel people-panel"><div className="panel-heading"><div><span className="panel-kicker">AROUND THE SCREEN</span><h2>In this cinema <small>{participants.length} / {room?.maxParticipants || maxPeople}</small></h2></div><button className="icon-button" onClick={() => setPeopleOpen(false)}>×</button></div>{participants.map((participant) => <div className="participant-row" key={participant.uid}><div className="mini-avatar art-violet">{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div><div><b>{participant.displayName} {participant.role === 'host' && <span className="host-tag">HOST</span>}</b><small>{participant.uid === user.uid ? 'You' : participant.online ? 'Online' : 'Last seen recently'} · {participant.cameraEnabled ? 'Camera on' : 'Camera off'} · {participant.microphoneEnabled ? 'Mic on' : 'Muted'}</small></div><span className="participant-signal">{participant.online ? '●' : '○'}</span></div>)}<button className="panel-invite" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>＋ Copy invite link</button></aside>}

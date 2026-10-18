@@ -93,7 +93,12 @@ test('authenticated host can atomically create a room and host membership', asyn
   await assertSucceeds(runTransaction(db, async (transaction) => {
     const existing = await transaction.get(roomRef)
     assert.equal(existing.exists(), false)
-    transaction.set(roomRef, { ...roomRecord('host-a'), createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    transaction.set(roomRef, {
+      ...roomRecord('host-a'),
+      playback: { state: 'paused', position: 0, updatedAt: serverTimestamp(), controllerId: 'host-a' },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
     transaction.set(memberRef, { ...memberRecord('host-a', 'host'), joinedAt: serverTimestamp(), lastSeen: serverTimestamp() })
   }))
 })
@@ -165,6 +170,36 @@ test('room capacity cannot be exceeded, and a viewer cannot change host permissi
   }))
   const viewerDb = testEnv.authenticatedContext('guest-b').firestore()
   await assertFails(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), { playbackPermission: 'Everyone' }))
+})
+
+test('host can update the authoritative playback state', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const hostDb = testEnv.authenticatedContext('host-a').firestore()
+  await assertSucceeds(updateDoc(doc(hostDb, 'rooms', 'ABC234'), {
+    playback: { state: 'playing', position: 42.5, updatedAt: serverTimestamp(), controllerId: 'host-a' },
+    updatedAt: serverTimestamp(),
+  }))
+})
+
+test('viewer cannot control host-only playback or claim another controller identity', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  const viewerDb = testEnv.authenticatedContext('guest-b').firestore()
+  await assertFails(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), {
+    playback: { state: 'paused', position: 42.5, updatedAt: serverTimestamp(), controllerId: 'host-a' },
+    updatedAt: serverTimestamp(),
+  }))
+})
+
+test('everyone playback permission allows a member to control playback', async () => {
+  await seedRoom('ABC234', 'host-a', 4, ['host-a', 'guest-b'])
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'rooms', 'ABC234'), { playbackPermission: 'Everyone' })
+  })
+  const viewerDb = testEnv.authenticatedContext('guest-b').firestore()
+  await assertSucceeds(updateDoc(doc(viewerDb, 'rooms', 'ABC234'), {
+    playback: { state: 'playing', position: 18, updatedAt: serverTimestamp(), controllerId: 'guest-b' },
+    updatedAt: serverTimestamp(),
+  }))
 })
 
 test('only the current member can write their own presence heartbeat', async () => {
