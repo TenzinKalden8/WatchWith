@@ -290,3 +290,146 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* The movie owns the screen. Friend cameras only appear on request, in side rails. */
+.cinema-stage { padding: 24px; background: #050607; }
+.cinema-page:not(.theater-mode):not(:fullscreen) .cinema-top {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  background: linear-gradient(#000b, transparent);
+  border: 0;
+}
+.cinema-page:not(.theater-mode):not(:fullscreen) .player-bar {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 4;
+  background: linear-gradient(transparent, #000d);
+  border: 0;
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+}
+.cinema-stage .screen-wrap {
+  width: min(100%, 1800px);
+  height: 100%;
+  max-height: 100%;
+  aspect-ratio: auto;
+}
+.cinema-stage .movie-screen { width: 100%; height: 100%; border-radius: 3px; }
+.cinema-stage .movie-screen video { object-fit: contain; }
+.cinema-stage:not(.participants-visible) .film-meta { left: 28px; top: 24px; }
+.participants-visible .screen-wrap { width: calc(100% - 316px); }
+.participants-visible .friend-rail {
+  inset: 28px 14px;
+  display: grid;
+  grid-template-columns: minmax(112px, 140px) minmax(0, 1fr) minmax(112px, 140px);
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  justify-items: center;
+}
+.participants-visible .participant-tile {
+  position: relative;
+  inset: auto;
+  width: min(100%, 140px);
+  height: auto;
+  aspect-ratio: 4 / 3;
+  margin: 5px 0;
+  border-radius: 10px;
+}
+.participants-visible .participant-tile-0 { grid-column: 1; grid-row: 1; }
+.participants-visible .participant-tile-1 { grid-column: 3; grid-row: 1; }
+.participants-visible .participant-tile-2 { grid-column: 1; grid-row: 2; }
+.participants-visible .participant-tile-3 { grid-column: 3; grid-row: 2; }
+.participants-visible .participant-tile-4 { grid-column: 1; grid-row: 3; }
+.participants-visible .participant-tile-5 { grid-column: 3; grid-row: 3; }
+.cinema-page.controls-hidden .cinema-top,
+.cinema-page.controls-hidden .player-bar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .35s ease;
+}
+.cinema-page.controls-visible .cinema-top,
+.cinema-page.controls-visible .player-bar { opacity: 1; transition: opacity .2s ease; }
+.cinema-page.controls-hidden .cinema-stage .film-meta,
+.cinema-page.controls-hidden .cinema-stage .movie-caption { opacity: 0; transition: opacity .25s ease; }
+.cinema-stage .movie-caption { display: none; }
+.cinema-page.theater-mode,
+.cinema-page:fullscreen {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 0;
+  background: #000;
+}
+.theater-mode .cinema-top,
+.cinema-page:fullscreen .cinema-top {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  height: 68px;
+  background: linear-gradient(#000b, transparent);
+  border: 0;
+}
+.theater-mode .player-bar,
+.cinema-page:fullscreen .player-bar {
+  position: absolute;
+  z-index: 4;
+  inset: auto 0 0;
+  background: linear-gradient(transparent, #000d);
+  border: 0;
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
+}
+.theater-mode .cinema-stage,
+.cinema-page:fullscreen .cinema-stage { position: absolute; inset: 0; padding: 0; }
+.theater-mode .cinema-stage .screen-wrap,
+.cinema-page:fullscreen .cinema-stage .screen-wrap {
+  width: min(100vw, 1920px);
+  height: 100%;
+  max-height: 100%;
+  aspect-ratio: auto;
+}
+.theater-mode .movie-screen,
+.cinema-page:fullscreen .movie-screen { border-radius: 0; box-shadow: none; }
+.theater-mode .film-meta,
+.theater-mode .movie-caption,
+.cinema-page:fullscreen .film-meta,
+.cinema-page:fullscreen .movie-caption { display: none; }
+.theater-mode .participants-visible .screen-wrap,
+.cinema-page:fullscreen .participants-visible .screen-wrap { width: calc(100vw - 316px); }
+.theater-mode .participants-visible .friend-rail,
+.cinema-page:fullscreen .participants-visible .friend-rail { inset: 54px 14px; }
+.theater-mode .floating-panel,
+.cinema-page:fullscreen .floating-panel { z-index: 6; }
+
+@media (max-width: 760px) {
+  .cinema-stage { padding: 10px; }
+  .cinema-stage:not(.participants-visible) .screen-wrap { width: 100%; max-height: 100%; }
+  .participants-visible .screen-wrap { width: calc(100% - 190px); }
+  .participants-visible .friend-rail {
+    inset: 12px 5px;
+    grid-template-columns: 84px minmax(0, 1fr) 84px;
+  }
+  .participants-visible .participant-tile { width: min(100%, 82px); border-radius: 7px; margin: 4px 0; }
+  .cinema-page.theater-mode .cinema-stage,
+  .cinema-page:fullscreen .cinema-stage { padding: 0; }
+  .theater-mode .cinema-top,
+  .cinema-page:fullscreen .cinema-top { height: 54px; }
+  .theater-mode .cinema-stage .screen-wrap,
+  .cinema-page:fullscreen .cinema-stage .screen-wrap { width: 100vw; }
+  .theater-mode .participants-visible .screen-wrap,
+  .cinema-page:fullscreen .participants-visible .screen-wrap { width: calc(100vw - 190px); }
+  .theater-mode .participants-visible .friend-rail,
+  .cinema-page:fullscreen .participants-visible .friend-rail { inset: 38px 5px; }
+  .cinema-page.controls-hidden .cinema-top,
+  .cinema-page.controls-hidden .player-bar { opacity: 0; }
+  .cinema-page.controls-hidden .round-control,
+  .cinema-page.controls-hidden .player-bar button { pointer-events: none; }
+}
+@media (max-width: 760px) and (orientation: portrait) {
+  .participants-visible .screen-wrap { width: calc(100% - 152px); }
+  .participants-visible .friend-rail { grid-template-columns: 68px minmax(0, 1fr) 68px; }
+  .participants-visible .participant-tile { width: 66px; }
+  .theater-mode .participants-visible .screen-wrap,
+  .cinema-page:fullscreen .participants-visible .screen-wrap { width: calc(100vw - 152px); }
+}

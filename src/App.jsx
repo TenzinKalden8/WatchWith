@@ -37,6 +37,9 @@ function App() {
   const [draft, setDraft] = useState('')
   const [reaction, setReaction] = useState('')
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false)
+  const [showParticipantVideos, setShowParticipantVideos] = useState(false)
+  const [cinemaFullscreen, setCinemaFullscreen] = useState(false)
+  const [controlsVisible, setControlsVisible] = useState(true)
   const [elapsed, setElapsed] = useState(0)
   const [duration, setDuration] = useState(540)
   const [volume, setVolume] = useState(0.8)
@@ -50,6 +53,8 @@ function App() {
   const [speakingUsers, setSpeakingUsers] = useState({})
   const [mediaPreviewReady, setMediaPreviewReady] = useState(false)
   const videoRef = useRef(null)
+  const cinemaRef = useRef(null)
+  const controlsTimer = useRef(null)
   const toastTimer = useRef(null)
   const mediaSession = useRef(null)
   const participantsRef = useRef(participants)
@@ -66,6 +71,7 @@ function App() {
 
   useEffect(() => () => clearTimeout(toastTimer.current), [])
   useEffect(() => () => clearTimeout(reactionTimer.current), [])
+  useEffect(() => () => clearTimeout(controlsTimer.current), [])
   useEffect(() => {
     if (!firebaseConfigured) return undefined
     return watchAuth((currentUser) => { setUser(currentUser); setAuthLoading(false) })
@@ -229,17 +235,59 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  useEffect(() => {
+    if (screen !== 'cinema') return undefined
+    const revealControls = () => {
+      setControlsVisible(true)
+      clearTimeout(controlsTimer.current)
+      if (playing && !chatOpen && !peopleOpen && !settingsOpen) {
+        controlsTimer.current = window.setTimeout(() => setControlsVisible(false), 2800)
+      }
+    }
+    const onFullscreenChange = () => setCinemaFullscreen(Boolean(document.fullscreenElement))
+    window.addEventListener('pointermove', revealControls)
+    window.addEventListener('pointerdown', revealControls)
+    window.addEventListener('touchstart', revealControls, { passive: true })
+    window.addEventListener('keydown', revealControls)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    revealControls()
+    return () => {
+      clearTimeout(controlsTimer.current)
+      window.removeEventListener('pointermove', revealControls)
+      window.removeEventListener('pointerdown', revealControls)
+      window.removeEventListener('touchstart', revealControls)
+      window.removeEventListener('keydown', revealControls)
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
+    }
+  }, [screen, playing, chatOpen, peopleOpen, settingsOpen])
+
   const inviteUrl = () => `${location.origin}${import.meta.env.BASE_URL}?room=${code}`
   const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
   const currentMember = participants.find((participant) => participant.uid === user?.uid)
   const canControlPlayback = room?.hostId === user?.uid
     || room?.playbackPermission === 'Everyone'
     || (room?.playbackPermission === 'Host + moderators' && currentMember?.role === 'moderator')
-  const visibleCinemaParticipants = mode === 'Focus'
-    ? []
-    : [...participants]
-      .sort((a, b) => mode === 'Speaker' ? Number(Boolean(speakingUsers[b.uid])) - Number(Boolean(speakingUsers[a.uid])) : 0)
-      .slice(0, 6)
+  const visibleCinemaParticipants = [...participants]
+    .sort((a, b) => mode === 'Speaker' ? Number(Boolean(speakingUsers[b.uid])) - Number(Boolean(speakingUsers[a.uid])) : 0)
+    .slice(0, 6)
+  const toggleCinemaFullscreen = async () => {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen?.()
+      return
+    }
+    if (cinemaFullscreen) {
+      setCinemaFullscreen(false)
+      return
+    }
+    try {
+      if (!cinemaRef.current?.requestFullscreen) throw new Error('Fullscreen is unavailable in this browser.')
+      await cinemaRef.current.requestFullscreen()
+      const orientationLock = window.screen?.orientation?.lock?.('landscape')
+      orientationLock?.catch(() => {})
+    } catch {
+      setCinemaFullscreen(true)
+    }
+  }
   const savePlayback = async (state, position) => {
     if (!room?.code || !user) return
     try {
@@ -397,6 +445,9 @@ function App() {
     setRoomBusy(true)
     setRoomError('')
     try {
+      if (document.fullscreenElement) await document.exitFullscreen?.()
+      setCinemaFullscreen(false)
+      setShowParticipantVideos(false)
       const { leaveRoom } = await import('./services/rooms')
       await leaveRoom(room.code, user.uid)
       mediaSession.current?.close()
@@ -445,10 +496,10 @@ function App() {
   if (!user) return <AuthScreen onSubmit={submitAuth} error={authError} busy={authBusy}/>
 
   if (screen === 'cinema') {
-    return <main className={`cinema-page mode-${mode.toLowerCase()}`}>
+    return <main ref={cinemaRef} className={`cinema-page mode-${mode.toLowerCase()}${cinemaFullscreen ? ' theater-mode' : ''}${controlsVisible || !playing ? ' controls-visible' : ' controls-hidden'}`}>
       <header className="cinema-top"><button className="back-button" disabled={roomBusy} onClick={handleLeaveRoom}>← <span>Leave cinema</span></button><div className="room-heading"><span className="live-dot"/><div><b>{room?.name || roomName}</b><small>Private cinema · <span>{room?.hostId === user.uid ? '👑 You’re hosting' : `Hosted by ${participants.find((participant) => participant.role === 'host')?.displayName || 'your friend'}`}</span></small></div></div><div className="top-actions"><button className="icon-button connection" title="Room connected">◉ <span>{participants.filter((participant) => participant.online).length} online</span></button><button className="invite-button" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>Invite friends <span>↗</span></button><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Room settings">⚙</button></div></header>
-      <section className="cinema-stage"><div className="film-meta"><span className="provider-pill">TEST VIDEO</span><b>{film.title}</b><small>{film.detail}</small></div><div className="screen-wrap"><div className="movie-screen"><video ref={videoRef} src={film.src} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onLoadedMetadata={handleVideoMetadata} onClick={togglePlayback}/>{!playing && <button className="big-play" onClick={togglePlayback} aria-label="Play movie">▶</button>}<div className="film-vignette"/></div></div>
-        {mode !== 'Focus' && <div className="friend-rail" aria-label="Cinema participants">{visibleCinemaParticipants.map((participant, index) => {
+      <section className={`cinema-stage${showParticipantVideos ? ' participants-visible' : ''}`}><div className="film-meta"><span className="provider-pill">TEST VIDEO</span><b>{film.title}</b><small>{film.detail}</small></div><div className="screen-wrap"><div className="movie-screen"><video ref={videoRef} src={film.src} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onTimeUpdate={(event) => setElapsed(event.currentTarget.currentTime)} onLoadedMetadata={handleVideoMetadata} onClick={() => setControlsVisible(true)}/>{!playing && <button className="big-play" onClick={togglePlayback} aria-label="Play movie">▶</button>}<div className="film-vignette"/></div></div>
+        {showParticipantVideos && <div className="friend-rail" aria-label="Cinema participants">{visibleCinemaParticipants.map((participant, index) => {
           const isLocal = participant.uid === user.uid
           const stream = isLocal ? localStream : remoteStreams.get(participant.uid)
           const cameraEnabled = isLocal ? cam : participant.cameraEnabled
@@ -473,7 +524,7 @@ function App() {
         {participants.length < 2 && <div className="empty-friends">The movie is ready. Invite a friend to take the other seat.</div>}
         <div className="reaction-float" aria-live="polite">{reaction}</div><div className="movie-caption"><span className="sound-bars"><i/><i/><i/><i/></span><span>Movie night, together</span></div>
       </section>
-      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'} disabled={!canControlPlayback}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} disabled={!canControlPlayback} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} onPointerUp={saveSeek} onKeyUp={saveSeek} aria-label="Movie position"/><label className="volume-control" aria-label="Movie volume">◖<input type="range" min="0" max="1" step="0.05" value={volume} onChange={(event) => { const nextVolume = Number(event.target.value); setVolume(nextVolume); if (videoRef.current) videoRef.current.volume = nextVolume }} aria-label="Movie volume"/></label></div><div className="social-controls"><div className="reaction-tools"><div className="emoji-row">{['❤️', '😂', '😭'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`} title={`React ${emoji}`}>{emoji}</button>)}</div><button className={`round-control reaction-more ${reactionPickerOpen ? 'selected' : ''}`} onClick={() => setReactionPickerOpen((open) => !open)} aria-label="More reactions" aria-expanded={reactionPickerOpen}>＋</button>{reactionPickerOpen && <div className="reaction-picker">{['❤️', '😂', '😭', '🔥', '😱', '👏', '💀'].map((emoji) => <button key={emoji} onClick={() => { sendReaction(emoji); setReactionPickerOpen(false) }} aria-label={`React ${emoji}`}>{emoji}</button>)}</div>}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone" title={mic ? 'Mute microphone' : 'Unmute microphone'}>🎙</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera" title={cam ? 'Turn camera off' : 'Turn camera on'}>📷</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat" title="Chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants" title="Participants">♙<span className="people-count">{participants.length}</span></button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Viewing settings">⚙</button></div></footer>
+      <footer className="player-bar"><div className="playback"><button className="player-icon" onClick={togglePlayback} aria-label={playing ? 'Pause movie' : 'Play movie'} disabled={!canControlPlayback}>{playing ? 'Ⅱ' : '▶'}</button><span className="timecode">{formatTime(elapsed)} <i>/</i> {formatTime(duration)}</span><input className="timeline" type="range" min="0" max={duration || 540} value={elapsed} disabled={!canControlPlayback} onChange={(event) => { const time = Number(event.target.value); setElapsed(time); if (videoRef.current) videoRef.current.currentTime = time }} onPointerUp={saveSeek} onKeyUp={saveSeek} aria-label="Movie position"/><label className="volume-control" aria-label="Movie volume">◖<input type="range" min="0" max="1" step="0.05" value={volume} onChange={(event) => { const nextVolume = Number(event.target.value); setVolume(nextVolume); if (videoRef.current) videoRef.current.volume = nextVolume }} aria-label="Movie volume"/></label></div><div className="social-controls"><div className="reaction-tools"><div className="emoji-row">{['❤️', '😂', '😭'].map((emoji) => <button key={emoji} onClick={() => sendReaction(emoji)} aria-label={`React ${emoji}`} title={`React ${emoji}`}>{emoji}</button>)}</div><button className={`round-control reaction-more ${reactionPickerOpen ? 'selected' : ''}`} onClick={() => setReactionPickerOpen((open) => !open)} aria-label="More reactions" aria-expanded={reactionPickerOpen}>＋</button>{reactionPickerOpen && <div className="reaction-picker">{['❤️', '😂', '😭', '🔥', '😱', '👏', '💀'].map((emoji) => <button key={emoji} onClick={() => { sendReaction(emoji); setReactionPickerOpen(false) }} aria-label={`React ${emoji}`}>{emoji}</button>)}</div>}</div><span className="control-divider"/><button className={`round-control ${mic ? '' : 'off'}`} onClick={() => toggleRoomDevice('audio')} aria-label="Toggle microphone" title={mic ? 'Mute microphone' : 'Unmute microphone'}>🎙</button><button className={`round-control ${cam ? '' : 'off'}`} onClick={() => toggleRoomDevice('video')} aria-label="Toggle camera" title={cam ? 'Turn camera off' : 'Turn camera on'}>📷</button><button className={`round-control ${chatOpen ? 'selected' : ''}`} onClick={() => { setChatOpen(!chatOpen); setPeopleOpen(false) }} aria-label="Open chat" title="Chat">▱</button><button className={`round-control ${peopleOpen ? 'selected' : ''}`} onClick={() => { setPeopleOpen(!peopleOpen); setChatOpen(false) }} aria-label="Participants" title="Participants" aria-pressed={peopleOpen}>♙<span className="people-count">{participants.length}</span></button><button className={`round-control ${showParticipantVideos ? 'selected' : ''}`} onClick={() => setShowParticipantVideos((visible) => !visible)} aria-label={showParticipantVideos ? 'Hide participant videos' : 'Show participant videos'} title={showParticipantVideos ? 'Hide friend videos' : 'Show friend videos'} aria-pressed={showParticipantVideos}>👥</button><button className="round-control" onClick={toggleCinemaFullscreen} aria-label={cinemaFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'} title={cinemaFullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-pressed={cinemaFullscreen}>{cinemaFullscreen ? '⤢' : '⛶'}</button><button className="round-control" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Viewing settings">⚙</button></div></footer>
       {roomError && <div role="alert" className="room-error-banner">{roomError}<button onClick={() => setRoomError('')}>×</button></div>}
       {chatOpen && <aside className="floating-panel chat-panel"><div className="panel-heading"><div><span className="panel-kicker">THE LOBBY</span><h2>Room chat <small>{participants.length}</small></h2></div><button className="icon-button" onClick={() => setChatOpen(false)}>×</button></div><div className="message-list" ref={chatListRef}>{messages.length ? messages.map((message) => <div className="message" key={message.id}><div className="mini-avatar art-violet">{message.displayName.slice(0, 2).toUpperCase()}</div><div><div className="message-top"><b>{message.displayName}</b><time>{message.time}</time></div><p>{message.text}</p></div></div>) : <p className="empty-chat">Be the first to say something in this cinema.</p>}</div><form className="chat-compose" onSubmit={sendMessage}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={500} placeholder="Say something…" aria-label="Chat message"/><button type="submit" aria-label="Send message">↑</button></form></aside>}
       {peopleOpen && <aside className="floating-panel people-panel"><div className="panel-heading"><div><span className="panel-kicker">AROUND THE SCREEN</span><h2>In this cinema <small>{participants.length} / {room?.maxParticipants || maxPeople}</small></h2></div><button className="icon-button" onClick={() => setPeopleOpen(false)}>×</button></div>{participants.map((participant) => <div className="participant-row" key={participant.uid}><div className="mini-avatar art-violet">{participant.displayName?.slice(0, 2).toUpperCase() || '👤'}</div><div><b>{participant.displayName} {participant.role === 'host' && <span className="host-tag">HOST</span>}{participant.role === 'moderator' && <span className="host-tag">MOD</span>}</b><small>{participant.uid === user.uid ? 'You' : participant.online ? 'Online' : 'Last seen recently'} · {participant.cameraEnabled ? 'Camera on' : 'Camera off'} · {participant.microphoneEnabled ? 'Mic on' : 'Muted'}</small></div><span className="participant-signal">{participant.online ? '●' : '○'}</span>{room?.hostId === user.uid && participant.uid !== user.uid && <button className="moderator-action" onClick={() => changeModeratorRole(participant, participant.role !== 'moderator')}>{participant.role === 'moderator' ? 'Remove moderator' : 'Make moderator'}</button>}</div>)}<button className="panel-invite" onClick={() => { navigator.clipboard?.writeText(inviteUrl()); notify('Invite link copied') }}>＋ Copy invite link</button></aside>}
